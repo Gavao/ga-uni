@@ -1,0 +1,498 @@
+// GAUNI: esami universitari e piano di studio. Tutto resta nel telefono (localStorage), con backup in JSON.
+// Pagine: Oggi (cosa studiare), Esami (appelli, prenotazioni, voti), Calendario (settimana/mese), Altro.
+import { APP_VERSION } from './version.js';
+import { carica, salva, statoIniziale, backup, ripristina } from './store.js';
+import { today, addDays, diffDays, weekday, ddmm, ddmmyyyy, longDate, shortDate, relDays, monthName, GIORNI_BREVI } from './date.js';
+import { leggiImport, unisci, leggiArgomenti, ISTRUZIONI_CLAUDE, ISTRUZIONI_ARGOMENTI, COLORI, uid } from './importa.js';
+import { ripianifica, segnaFatto, oreIndietro, oreTotali, oreFatte, argomentiDi, appelloScelto, capacita, oreNecessarie, TIPI } from './pianifica.js';
+import { applicaProposta, avvisi, carriera, statoPrenotazione, appelloValido } from './esami.js';
+import { creaIcs } from './ics.js';
+
+const $ = s => document.querySelector(s);
+const view = $('#view');
+const sheet = $('#sheet');
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const ore = h => `${String(Math.round(h * 10) / 10).replace('.', ',')} h`;
+const fmtMedia = m => (m == null ? '—' : m.toFixed(2).replace('.', ','));
+
+let S = carica();
+let oggi = today();
+let cal = { modo: 'mese', rif: oggi };
+let anteprima = null;   // import in attesa di conferma
+let giornoAperto = null; // giorno mostrato nella finestra del calendario
+
+if (!S) {   // primo avvio: esami di partenza, appelli proposti, piano pronto
+  S = statoIniziale();
+  applicaProposta(S, oggi);
+  ripianifica(S, oggi);
+  salva(S);
+}
+
+function toast(text, ms = 3200) {
+  const t = $('#toast');
+  t.textContent = text;
+  t.hidden = false;
+  clearTimeout(toast.t);
+  toast.t = setTimeout(() => { t.hidden = true; }, ms);
+}
+/** Dopo ogni modifica a esami o impostazioni: piano rifatto da oggi (il lavoro fatto resta) e salvataggio. */
+function aggiorna(msg) {
+  ripianifica(S, oggi);
+  salva(S);
+  if (msg) toast(msg);
+  render();
+}
+const esame = id => S.esami.find(e => e.id === id);
+const avvisiOra = () => avvisi(S, oggi, S.piano);
+
+// ---------------------------------------------------------------- Oggi
+function pageOggi() {
+  const prossimi = S.esami.filter(e => !e.esito && appelloScelto(e) && appelloScelto(e).data >= oggi).sort((a, b) => appelloScelto(a).data.localeCompare(appelloScelto(b).data));
+  const next = prossimi[0];
+  const tutti = avvisiOra();
+  const av = tutti.filter(a => !a.deficit);   // le ore che mancano: un solo riepilogo qui sotto
+  const need = tutti.some(a => a.deficit) ? oreNecessarie(S, oggi) : null;
+  const c = carriera(S);
+  const indietro = oreIndietro(S, oggi);
+  const oggiBlocchi = [
+    ...(S.fatti ?? []).map((b, i) => ({ ...b, fatto: true, storico: i })).filter(b => b.giorno === oggi),
+    ...(S.piano?.blocchi ?? []).filter(b => b.giorno === oggi),
+  ];
+  const tot = oggiBlocchi.reduce((a, b) => a + b.ore, 0), fatto = oggiBlocchi.filter(b => b.fatto).reduce((a, b) => a + b.ore, 0);
+  const domani = (S.piano?.blocchi ?? []).filter(b => b.giorno === addDays(oggi, 1));
+  view.innerHTML = `<header class="top"><span class="brand">🎓</span><h1>GAUNI<small>${esc(longDate(oggi))}</small></h1></header>
+    ${next ? (() => {
+      const a = appelloScelto(next), d = diffDays(oggi, a.data), f = oreFatte(S, next.id).totale;
+      return `<a class="card hero" style="--c:${next.colore}" href="#/esame/${next.id}"><div class="kicker">Prossimo esame</div><h3>${esc(next.nome)}</h3>
+        <div class="note">${esc(longDate(a.data))} alle ${a.ora} · ${next.cfu} CFU</div>
+        <div class="count">${d === 0 ? 'Oggi!' : d === 1 ? 'Domani' : `${d} <small>giorni</small>`}</div>
+        <div class="bar"><i style="width:${Math.min(100, (f / Math.max(1, oreTotali(next))) * 100)}%"></i></div><small class="note">${ore(f)} studiate su ${ore(oreTotali(next))} previste</small></a>`;
+    })() : '<div class="card empty">Nessun esame in programma: scegli gli appelli in Esami.</div>'}
+    ${av.length ? `<div class="alerts">${av.slice(0, 5).map(alertHtml).join('')}${av.length > 5 ? `<a class="note" href="#/esami">Altri ${av.length - 5} avvisi in Esami ›</a>` : ''}</div>` : ''}
+    ${need ? riepilogoOre(need) : ''}
+    ${indietro >= 0.5 ? `<div class="card behind"><span>⏰ Sei indietro di <b>${ore(indietro)}</b> rispetto al piano.</span><button class="secondary small" data-replan>Ripianifica</button></div>` : ''}
+    <h2>Da studiare oggi <small>${tot ? `${ore(fatto)} / ${ore(tot)}` : ''}</small></h2>
+    ${oggiBlocchi.length ? `<div class="tasks">${oggiBlocchi.map(taskHtml).join('')}</div>`
+      : `<div class="empty">${capacita(S.impostazioni, oggi) ? 'Niente in programma oggi 🎉' : 'Oggi è giorno di riposo 😌'}</div>`}
+    ${domani.length ? `<h2>Domani <small>${ore(domani.reduce((a, b) => a + b.ore, 0))}</small></h2><div class="tasks">${domani.map(b => taskHtml(b, true)).join('')}</div>` : ''}
+    <h2>Carriera</h2>
+    <div class="stats"><div class="stat"><b>${c.cfu}/${c.tot}</b><small>CFU</small></div><div class="stat"><b>${fmtMedia(c.media)}</b><small>media</small></div>
+      <div class="stat"><b>${c.base110 == null ? '—' : Math.round(c.base110)}</b><small>su 110</small></div></div>`;
+}
+/** Le ore non bastano: quante ne servirebbero al giorno, e quali esami non ci stanno comunque. */
+function riepilogoOre(need) {
+  const imp = S.impostazioni;
+  const nomi = need.impossibili.map(id => esame(id)?.nome).filter(Boolean);
+  return `<div class="card" style="border-color:var(--orange)">
+    ${need.ore > imp.oreGiorno ? `<p style="margin:0 0 8px">🟠 Con <b>${ore(imp.oreGiorno)} al giorno</b> non ci stai dentro: per tutti gli esami servirebbero circa <b>${ore(need.ore)} al giorno</b>.</p>
+      <button class="secondary small" data-setore="${need.ore}">Studia ${ore(need.ore)} al giorno</button>` : ''}
+    ${nomi.length ? `<p style="margin:8px 0 0">🔴 <b>${esc(nomi.join(', '))}</b>: le ore previste non entrano nemmeno studiando tutto il giorno. Se hai già seguito il corso, indica quanto hai già studiato nell'esame (le ore scendono), oppure scegli un appello più avanti.</p>` : ''}
+    <p class="note">Le ore previste sono ${S.esami[0]?.oreCfu ?? 25} per CFU: puoi cambiarle esame per esame.</p></div>`;
+}
+function alertHtml(a) {
+  const e = esame(a.esameId);
+  const btn = a.prenota ? `<button class="secondary small" data-booked="${a.esameId}">Prenotato</button>` : '';
+  return `<div class="alert ${a.livello}"><span>${a.livello === 'rosso' ? '🔴' : a.livello === 'arancio' ? '🟠' : a.livello === 'verde' ? '🟢' : 'ℹ️'} ${esc(a.testo)}</span>${btn}${!btn && e ? `<a class="link" href="#/esame/${e.id}">›</a>` : ''}</div>`;
+}
+function taskHtml(b, readonly = false) {
+  const e = esame(b.esameId);
+  if (!e) return '';
+  const [emoji, label] = TIPI[b.tipo] ?? ['•', b.tipo];
+  const cosa = b.tipo === 'studio' || b.tipo === 'ripasso' ? (b.titolo || (b.argomentoId ? argomentiDi(e).find(t => t.id === b.argomentoId)?.titolo : '') || 'argomenti già studiati') : '';
+  const key = b.storico != null ? `s${b.storico}` : `p${b.id}`;
+  return `<${readonly ? 'div' : 'button'} class="task ${b.fatto ? 'done' : ''}" style="--c:${e.colore}" ${readonly ? '' : `data-task="${esc(key)}"`}>
+    ${readonly ? '' : `<span class="check">${b.fatto ? '✓' : ''}</span>`}
+    <span class="t-body"><b>${emoji} ${label}${cosa ? `: ${esc(cosa)}` : ''}</b><small>${esc(e.nome)}</small></span><span class="h">${ore(b.ore)}</span></${readonly ? 'div' : 'button'}>`;
+}
+
+// ---------------------------------------------------------------- Esami
+function pageEsami() {
+  const data = e => (e.esito ? 'z' + (e.esito.data ?? '') : appelloScelto(e)?.data ?? 'y');
+  const lista = [...S.esami].sort((a, b) => data(a).localeCompare(data(b)));
+  const av = avvisiOra().filter(a => !a.deficit);   // le ore che mancano si vedono nella scheda di ogni esame
+  view.innerHTML = `<header class="top"><span class="brand">🎓</span><h1>Esami<small>${S.esami.length} esami · ${S.esami.reduce((a, e) => a + e.cfu, 0)} CFU</small></h1></header>
+    <button class="primary" data-propose>✨ Proponi gli appelli migliori</button>
+    <p class="note">Sceglie per te: mai due esami lo stesso giorno, esami vicini il più distanti possibile, abbastanza ore di studio per ognuno. Le scelte fatte a mano (📌) restano.</p>
+    ${av.length ? `<div class="alerts">${av.map(alertHtml).join('')}</div>` : ''}
+    ${lista.map(e => examCard(e)).join('')}`;
+}
+function examCard(e) {
+  const a = appelloScelto(e);
+  const f = oreFatte(S, e.id).totale, H = oreTotali(e);
+  const args = argomentiDi(e), done = args.filter(t => t.fattoIl).length;
+  if (e.esito) {
+    return `<a class="exam passed" style="--c:${e.colore}" href="#/esame/${e.id}"><div class="exam-head"><b>${esc(e.nome)}</b><small>${e.cfu} CFU</small></div>
+      <div class="sub">✅ Superato con <b>${e.esito.voto}${e.esito.lode ? ' e lode' : ''}</b>${e.esito.data ? ` il ${ddmmyyyy(e.esito.data)}` : ''}</div></a>`;
+  }
+  const chips = e.appelli.map(x => {
+    const st = statoPrenotazione(x, oggi);
+    const valid = appelloValido(x, oggi);
+    return `<button class="chip ${x.id === e.scelta ? 'on' : ''} ${valid ? '' : 'off'}" data-pick="${e.id}|${x.id}" ${valid || x.id === e.scelta ? '' : 'disabled'}>${shortDate(x.data)}${x.prenotato ? ' ✓' : ''}${st.k === 'aperta' && x.id === e.scelta ? ' ·🟢' : ''}</button>`;
+  }).join('');
+  return `<div class="exam" style="--c:${e.colore}"><a class="exam-head" href="#/esame/${e.id}"><b>${esc(e.nome)}${e.sceltaManuale ? ' 📌' : ''}</b><small>${e.cfu} CFU ›</small></a>
+    <div class="chips">${chips}<button class="chip ${e.scelta === 'salta' ? 'on' : ''}" data-pick="${e.id}|salta">Salta</button></div>
+    ${a ? `<div class="sub">${esc(longDate(a.data))} · ${relDays(oggi, a.data)} · ${esc(statoPrenotazione(a, oggi).testo)}</div>
+      <div class="bar"><i style="width:${Math.min(100, (f / Math.max(1, H)) * 100)}%"></i></div>
+      <div class="sub">${done}/${args.length} argomenti · ${ore(f)} di ${ore(H)}${S.piano?.mancanti?.[e.id] ? ` · <span style="color:var(--red)">⚠️ mancano ~${S.piano.mancanti[e.id]} h</span>` : ''}</div>` : '<div class="sub">Non in programma</div>'}</div>`;
+}
+
+// ---------------------------------------------------------------- Dettaglio esame
+function pageEsame(id) {
+  const e = esame(id);
+  if (!e) { location.hash = '#/esami'; return; }
+  const H = oreTotali(e), f = oreFatte(S, e.id);
+  const args = e.argomenti;
+  const a = appelloScelto(e);
+  const mancanti = S.piano?.mancanti?.[e.id];
+  view.innerHTML = `<header class="top"><a class="back" href="#/esami">‹</a><h1>${esc(e.nome)}<small>${e.cfu} CFU${e.codice ? ` · ${esc(e.codice)}` : ''}</small></h1></header>
+    ${e.esito ? `<div class="card hero" style="--c:${e.colore}"><div class="kicker">Superato</div><div class="count">${e.esito.voto}${e.esito.lode ? '<small> e lode</small>' : ''}</div>
+      <button class="link" data-unpass="${e.id}">Annulla il voto</button></div>` : ''}
+    <h2>Appelli</h2>
+    <div class="list">${e.appelli.map(x => {
+      const st = statoPrenotazione(x, oggi);
+      return `<div class="row" style="--c:${e.colore}"><span><b>${x.id === e.scelta ? '👉 ' : ''}${esc(longDate(x.data))} · ${x.ora}</b>
+        <small>${esc([x.tipo, x.modalita].filter(Boolean).join(' · '))}${x.aperturaPren ? `<br>Prenotazioni: dal ${ddmm(x.aperturaPren)} al ${ddmm(x.chiusuraPren ?? x.data)}` : ''}</small>
+        <span class="badge ${st.k === 'aperta' ? (st.giorni <= 2 ? 'rosso' : 'verde') : st.k === 'prenotato' ? 'verde' : ''}">${esc(st.testo)}</span></span>
+        <span class="inline" style="flex:none;flex-direction:column;gap:6px">
+          ${x.id !== e.scelta && x.data > oggi ? `<button class="secondary small" data-pick="${e.id}|${x.id}">Scegli</button>` : ''}
+          ${x.data > oggi ? `<button class="secondary small" data-book="${e.id}|${x.id}">${x.prenotato ? 'Annulla pren.' : 'Prenotato'}</button>` : ''}</span></div>`;
+    }).join('')}
+      <button class="secondary wide" data-pick="${e.id}|salta">${e.scelta === 'salta' ? '✓ Saltato' : 'Salta questo esame'}</button>
+      ${e.sceltaManuale ? `<button class="link" data-unpin="${e.id}">📌 Scelta fatta a mano: lascia decidere all'app</button>` : ''}</div>
+
+    <h2>Studio <small>${ore(f.totale)} fatte di ${ore(H)}</small></h2>
+    <div class="card" style="--c:${e.colore}">
+      <div class="bar"><i style="width:${Math.min(100, (f.totale / Math.max(1, H)) * 100)}%"></i></div>
+      ${mancanti ? `<p class="note" style="color:var(--red)">⚠️ Con il ritmo attuale mancano circa ${mancanti} h prima dell'esame.</p>` : ''}
+      <label class="field"><span>Ore per CFU (di solito 25)</span><input type="number" min="5" max="40" step="1" value="${e.oreCfu}" data-ecfg="oreCfu|${e.id}"></label>
+      <label class="field"><span>Già studiato / seguito: <b>${e.giaStudiato}%</b> (le ore previste scendono)</span><input type="range" min="0" max="90" step="10" value="${e.giaStudiato}" data-ecfg="giaStudiato|${e.id}"></label>
+      <p class="note">Ore previste: ${e.cfu} CFU × ${e.oreCfu} h${e.giaStudiato ? ` − ${e.giaStudiato}%` : ''} = <b>${ore(H)}</b>. Studio ${ore(f.studio)}, ripassi ${ore(f.ripasso)}, simulazioni ${ore(f.simulazione)}, ripasso finale ${ore(f.finale)}.</p>
+    </div>
+
+    <h2>Argomenti <small>${args.filter(t => t.fattoIl).length}/${args.length} fatti</small></h2>
+    ${args.length ? `<div class="list">${args.map(t => `<div class="topic ${t.fattoIl ? 'done' : ''}" style="--c:${e.colore}">
+      <button class="tick ${t.fattoIl ? 'on' : ''}" data-tdone="${e.id}|${t.id}">${t.fattoIl ? '✓' : ''}</button><span class="t">${esc(t.titolo)}</span>
+      <button class="diff ${t.difficolta}" data-tdiff="${e.id}|${t.id}">${t.difficolta}</button><button class="x" data-tdel="${e.id}|${t.id}" aria-label="Togli">×</button></div>`).join('')}</div>`
+      : '<p class="note">Ancora nessun argomento: il piano usa delle "parti" generiche. Incolla il programma qui sotto per un piano più preciso.</p>'}
+    <label class="field"><span>Aggiungi argomenti (uno per riga; "(difficile)" o "(facile)" alla fine per la difficoltà)</span>
+      <textarea id="newTopics" placeholder="Ricerca nello spazio degli stati (difficile)&#10;Logica proposizionale (facile)&#10;Reti bayesiane"></textarea></label>
+    <div class="row-buttons"><button class="secondary" data-addtopics="${e.id}">Aggiungi</button><button class="secondary" data-copy="argomenti">📋 Istruzioni per Claude</button></div>
+    <p class="note">Con "Istruzioni per Claude" copi una richiesta da incollare in Claude insieme al programma del corso: ti restituisce l'elenco pronto da incollare qui.</p>
+
+    ${e.esito ? '' : `<h2>Esame superato?</h2>
+      <div class="card"><div class="inline"><label class="field"><span>Voto</span><select id="voto">${Array.from({ length: 13 }, (_, i) => 30 - i).map(v => `<option>${v}</option>`).join('')}</select></label>
+        <label class="check-line" style="margin-top:28px"><input type="checkbox" id="lode"> Lode</label></div>
+        <button class="primary" data-pass="${e.id}">Salva il voto</button></div>`}
+    <button class="link danger" data-delexam="${e.id}">Elimina questo esame</button>`;
+  void a;
+}
+
+// ---------------------------------------------------------------- Calendario
+function pageCalendario() {
+  const blocchi = [...(S.fatti ?? []).map(b => ({ ...b, fatto: true })), ...(S.piano?.blocchi ?? [])];
+  const perGiorno = {};
+  for (const b of blocchi) (perGiorno[b.giorno] ??= []).push(b);
+  const esamiGiorno = {};
+  for (const e of S.esami) { const a = appelloScelto(e); if (a && !e.esito) (esamiGiorno[a.data] ??= []).push(e); }
+  const inPausa = d => (S.impostazioni.pause ?? []).some(p => p.da <= d && d <= p.a);
+  const r = cal.rif;
+  let body = '', titolo = '';
+  if (cal.modo === 'mese') {
+    const primo = `${r.slice(0, 7)}-01`;
+    titolo = `${monthName(+r.slice(5, 7) - 1)} ${r.slice(0, 4)}`;
+    const start = addDays(primo, -weekday(primo));
+    const cells = [];
+    for (let i = 0; i < 42; i++) {
+      const d = addDays(start, i);
+      if (i >= 35 && d.slice(5, 7) !== primo.slice(5, 7)) break;
+      const ex = esamiGiorno[d]?.[0];
+      const bl = perGiorno[d] ?? [];
+      const perEsame = {};
+      for (const b of bl) perEsame[b.esameId] = (perEsame[b.esameId] ?? 0) + b.ore;
+      cells.push(`<button class="day ${d.slice(5, 7) !== primo.slice(5, 7) ? 'out' : ''} ${d === oggi ? 'today' : ''} ${ex ? 'exam-day' : ''} ${inPausa(d) ? 'pausa' : ''}" style="--c:${ex?.colore ?? 'transparent'}" data-day="${d}">
+        <span class="n">${+d.slice(8)}</span><span class="bars">${Object.entries(perEsame).slice(0, 3).map(([id, h]) => `<i style="--c:${esame(id)?.colore};width:${Math.min(100, h * 20)}%"></i>`).join('')}</span></button>`);
+    }
+    body = `<div class="month">${GIORNI_BREVI.map(g => `<span class="dow">${g}</span>`).join('')}${cells.join('')}</div>`;
+  } else {
+    const lun = addDays(r, -weekday(r));
+    titolo = `${ddmm(lun)} – ${ddmm(addDays(lun, 6))}`;
+    body = Array.from({ length: 7 }, (_, i) => {
+      const d = addDays(lun, i);
+      const ex = esamiGiorno[d] ?? [];
+      const bl = perGiorno[d] ?? [];
+      return `<div class="week-day ${d === oggi ? 'today' : ''}"><b>${esc(longDate(d, false))}${inPausa(d) ? ' · pausa' : ''}</b>
+        ${ex.map(e => `<div class="alert" style="border-color:${e.colore}"><span>🎓 <b>Esame: ${esc(e.nome)}</b> alle ${appelloScelto(e).ora}</span></div>`).join('')}
+        ${bl.length ? `<div class="tasks">${bl.map(b => taskHtml(b, d !== oggi)).join('')}</div>` : ex.length ? '' : '<small class="note">Niente</small>'}</div>`;
+    }).join('');
+  }
+  const attivi = S.esami.filter(e => !e.esito && appelloScelto(e));
+  view.innerHTML = `<header class="top"><span class="brand">🎓</span><h1>Calendario</h1></header>
+    <div class="seg"><button class="${cal.modo === 'settimana' ? 'on' : ''}" data-calmode="settimana">Settimana</button><button class="${cal.modo === 'mese' ? 'on' : ''}" data-calmode="mese">Mese</button></div>
+    <div class="cal-nav"><button class="icon" data-calmove="-1">‹</button><b>${esc(titolo)}</b><button class="icon" data-calmove="1">›</button></div>
+    <button class="link" data-caltoday>Torna a oggi</button>
+    ${body}
+    <div class="legend">${attivi.map(e => `<span style="--c:${e.colore}">${esc(e.nome)}</span>`).join('')}</div>`;
+}
+function daySheet(d) {
+  giornoAperto = d;
+  const bl = [...(S.fatti ?? []).map((b, i) => ({ ...b, fatto: true, storico: i })), ...(S.piano?.blocchi ?? [])].filter(b => b.giorno === d);
+  const ex = S.esami.filter(e => !e.esito && appelloScelto(e)?.data === d);
+  sheet.innerHTML = `<div class="sheet-head"><h2>${esc(longDate(d))}</h2><button class="icon" data-close>✕</button></div>
+    ${ex.map(e => `<div class="alert" style="border-color:${e.colore}"><span>🎓 <b>Esame: ${esc(e.nome)}</b> alle ${appelloScelto(e).ora}</span></div>`).join('')}
+    ${bl.length ? `<div class="tasks">${bl.map(b => taskHtml(b, d > oggi)).join('')}</div>` : '<p class="empty">Niente in programma.</p>'}
+    ${d > oggi ? '<p class="note">Si possono spuntare solo i giorni di oggi e passati.</p>' : ''}`;
+  if (!sheet.open) sheet.showModal();
+}
+
+// ---------------------------------------------------------------- Altro
+function pageAltro() {
+  const imp = S.impostazioni;
+  view.innerHTML = `<header class="top"><span class="brand">🎓</span><h1>Altro</h1></header>
+    <h2>Ritmo di studio</h2>
+    <div class="card">
+      <div class="field"><span>Ore di studio al giorno</span><div class="stepper"><button class="icon" data-imp="oreGiorno|-0.5">−</button><b>${ore(imp.oreGiorno)}</b><button class="icon" data-imp="oreGiorno|0.5">+</button></div></div>
+      <div class="field"><span>Giorni di studio</span><div class="days">${GIORNI_BREVI.map((g, i) => `<button class="${imp.giorni.includes(i) ? 'on' : ''}" data-wday="${i}">${g}</button>`).join('')}</div></div>
+      <div class="field"><span>Giorni di solo ripasso prima di ogni esame</span><div class="stepper"><button class="icon" data-imp="giorniRipasso|-1">−</button><b>${imp.giorniRipasso}</b><button class="icon" data-imp="giorniRipasso|1">+</button></div></div>
+      <p class="note">${ore(imp.oreGiorno * imp.giorni.length)} a settimana. Servono ${ore(S.esami.filter(e => !e.esito && appelloScelto(e)).reduce((a, e) => a + oreTotali(e), 0))} in tutto per gli esami in programma.</p>
+    </div>
+    <h2>Pause <small>vacanze, feste, impegni</small></h2>
+    <div class="list">${(imp.pause ?? []).map(p => `<div class="row"><span><b>${esc(p.nome || 'Pausa')}</b><small>dal ${ddmmyyyy(p.da)} al ${ddmmyyyy(p.a)} · ${p.fattore ? `a ${Math.round(p.fattore * 100)}%` : 'niente studio'}</small></span><button class="x" data-delpause="${p.id}">×</button></div>`).join('') || '<p class="note">Nessuna pausa.</p>'}</div>
+    <div class="card">
+      <label class="field"><span>Nome</span><input id="pNome" placeholder="es. Vacanze di Natale"></label>
+      <div class="inline"><label class="field"><span>Dal</span><input type="date" id="pDa"></label><label class="field"><span>Al</span><input type="date" id="pA"></label></div>
+      <label class="field"><span>Ritmo</span><select id="pFatt"><option value="0">Niente studio</option><option value="0.5">Metà ore</option><option value="0.25">Un quarto</option></select></label>
+      <button class="secondary wide" data-addpause>Aggiungi la pausa</button>
+    </div>
+    <h2>Importa esami</h2>
+    <p class="note">Copia gli appelli dal portale, incollali in Claude insieme alle istruzioni (pulsante qui sotto) e incolla qui il risultato. Gli esami già presenti si aggiornano senza perdere argomenti e voti.</p>
+    <button class="secondary wide" data-copy="esami">📋 Copia istruzioni per Claude</button>
+    <label class="field"><span>Testo da importare</span><textarea id="importText" placeholder='{ "formato": "ga-studio-esami-v1", "esami": [ … ] }'></textarea></label>
+    <button class="secondary wide" data-readimport>Leggi</button>
+    <h2>Calendario e backup</h2>
+    <div class="list">
+      <button class="row" data-ics><span><b>📅 Esporta in Google Calendar (.ics)</b><small>esami scelti e scadenze delle prenotazioni</small></span></button>
+      <button class="row" data-backup><span><b>💾 Salva un backup</b><small>file JSON con tutto: esami, argomenti, voti, piano</small></span></button>
+      <button class="row" data-restore><span><b>♻️ Ripristina un backup</b><small>sostituisce i dati di questo telefono</small></span></button>
+    </div>
+    <input type="file" id="restoreFile" accept=".json,application/json,text/plain" hidden>
+    <h2>App</h2>
+    <p class="note">GAUNI ${esc(APP_VERSION)}. I dati restano solo su questo telefono: fai un backup ogni tanto.
+      Su iPhone: apri la pagina in Safari → Condividi → "Aggiungi alla schermata Home". Su Android: menu di Chrome → "Installa app".</p>
+    <button class="link danger" data-reset>Ricomincia da capo</button>`;
+}
+function importPreview() {
+  const { esami, errori } = anteprima;
+  sheet.innerHTML = `<div class="sheet-head"><h2>Anteprima import</h2><button class="icon" data-close>✕</button></div>
+    ${errori.length ? `<div class="alerts">${errori.map(t => `<div class="alert arancio"><span>⚠️ ${esc(t)}</span></div>`).join('')}</div>` : ''}
+    <p class="note">${esami.length} esami, ${esami.reduce((a, e) => a + e.appelli.length, 0)} appelli:</p>
+    <div class="list">${esami.map(e => `<div class="row"><span><b>${esc(e.nome)}</b><small>${e.cfu} CFU · ${e.appelli.map(a => shortDate(a.data)).join(', ')}</small></span></div>`).join('')}</div>
+    ${esami.length ? '<button class="primary" data-doimport>Importa</button>' : ''}`;
+  if (!sheet.open) sheet.showModal();
+}
+
+// ---------------------------------------------------------------- navigazione
+function render() {
+  oggi = today();
+  const h = location.hash.replace(/^#\/?/, '');
+  const [page, id] = h.split('/');
+  const tab = page === 'esame' ? 'esami' : page || 'oggi';
+  for (const a of document.querySelectorAll('#nav a')) a.classList.toggle('on', a.dataset.tab === tab);
+  if (page === 'esami') pageEsami();
+  else if (page === 'esame') pageEsame(id);
+  else if (page === 'calendario') pageCalendario();
+  else if (page === 'altro') pageAltro();
+  else pageOggi();
+}
+addEventListener('hashchange', () => { render(); scrollTo(0, 0); });
+
+function scarica(nome, testo, tipo) {
+  const url = URL.createObjectURL(new Blob([testo], { type: tipo }));
+  const a = Object.assign(document.createElement('a'), { href: url, download: nome });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+async function copia(testo) {
+  try { await navigator.clipboard.writeText(testo); toast('Copiato! Incollalo in Claude e aggiungi sotto il testo.'); }
+  catch { sheet.innerHTML = `<div class="sheet-head"><h2>Copia questo testo</h2><button class="icon" data-close>✕</button></div><textarea readonly style="min-height:300px">${esc(testo)}</textarea>`; sheet.showModal(); }
+}
+
+// ---------------------------------------------------------------- tocchi
+document.addEventListener('click', async e => {
+  const t = e.target;
+  const on = sel => t.closest(sel);
+  if (on('[data-close]')) { sheet.close(); return; }
+  let el;
+  if ((el = on('[data-task]'))) {
+    const k = el.dataset.task;
+    if (k.startsWith('s')) {   // tolto dallo storico (era già fatto)
+      const [b] = S.fatti.splice(+k.slice(1), 1);
+      segnaFatto(S, b, false, oggi);
+    } else {
+      const b = S.piano.blocchi.find(x => x.id === k.slice(1));
+      if (!b) return;
+      segnaFatto(S, b, !b.fatto, oggi);
+      if (b.fatto) navigator.vibrate?.(30);
+    }
+    salva(S);
+    if (sheet.open && giornoAperto) daySheet(giornoAperto);
+    render();
+    return;
+  }
+  if ((el = on('[data-setore]'))) { S.impostazioni.oreGiorno = +el.dataset.setore; aggiorna(`Ora studi ${ore(+el.dataset.setore)} al giorno: piano rifatto.`); return; }
+  if (on('[data-replan]')) { aggiorna('Piano rifatto da oggi: il lavoro rimasto è ridistribuito.'); return; }
+  if ((el = on('[data-booked]'))) {
+    const x = esame(el.dataset.booked), a = appelloScelto(x);
+    if (a) { a.prenotato = true; x.scelta = a.id; x.sceltaManuale = true; }
+    salva(S); toast(`Prenotato: ${x.nome} 👍`); render(); return;
+  }
+  if ((el = on('[data-pick]'))) {
+    const [id, scelta] = el.dataset.pick.split('|');
+    const x = esame(id);
+    x.scelta = x.scelta === scelta && scelta === 'salta' ? null : scelta;
+    x.sceltaManuale = true;
+    if (x.scelta === null) { x.sceltaManuale = false; applicaProposta(S, oggi); }
+    aggiorna(); return;
+  }
+  if ((el = on('[data-book]'))) {
+    const [id, aid] = el.dataset.book.split('|');
+    const x = esame(id), a = x.appelli.find(y => y.id === aid);
+    a.prenotato = !a.prenotato;
+    if (a.prenotato) { x.scelta = a.id; x.sceltaManuale = true; }
+    aggiorna(a.prenotato ? 'Segnato come prenotato.' : null); return;
+  }
+  if ((el = on('[data-unpin]'))) { const x = esame(el.dataset.unpin); x.sceltaManuale = false; applicaProposta(S, oggi); aggiorna('L\'app sceglie di nuovo l\'appello migliore.'); return; }
+  if (on('[data-propose]')) {
+    const prima = Object.fromEntries(S.esami.map(x => [x.id, x.scelta]));
+    applicaProposta(S, oggi);
+    const cambiati = S.esami.filter(x => x.scelta !== prima[x.id]).length;
+    aggiorna(cambiati ? `Proposta pronta: ${cambiati} appelli cambiati.` : 'Le scelte erano già le migliori 👍'); return;
+  }
+  if ((el = on('[data-pass]'))) {
+    const x = esame(el.dataset.pass);
+    x.esito = { voto: +$('#voto').value, lode: $('#lode').checked && +$('#voto').value === 30, data: appelloScelto(x)?.data ?? oggi };
+    aggiorna(`🎉 Complimenti! ${x.nome}: ${x.esito.voto}${x.esito.lode ? ' e lode' : ''}`); return;
+  }
+  if ((el = on('[data-unpass]'))) { esame(el.dataset.unpass).esito = null; aggiorna(); return; }
+  if ((el = on('[data-delexam]'))) {
+    const x = esame(el.dataset.delexam);
+    if (!confirm(`Eliminare ${x.nome}? Si perdono argomenti e voto.`)) return;
+    S.esami = S.esami.filter(y => y !== x);
+    S.fatti = S.fatti.filter(b => b.esameId !== x.id);
+    location.hash = '#/esami';
+    aggiorna('Esame eliminato.'); return;
+  }
+  if ((el = on('[data-addtopics]'))) {
+    const x = esame(el.dataset.addtopics);
+    const nuovi = leggiArgomenti($('#newTopics').value);
+    if (!nuovi.length) return toast('Scrivi almeno un argomento.');
+    x.argomenti.push(...nuovi);
+    aggiorna(`${nuovi.length} argomenti aggiunti.`); return;
+  }
+  if ((el = on('[data-tdiff]'))) {
+    const [id, tid] = el.dataset.tdiff.split('|');
+    const tp = esame(id).argomenti.find(y => y.id === tid);
+    tp.difficolta = { facile: 'medio', medio: 'difficile', difficile: 'facile' }[tp.difficolta];
+    aggiorna(); return;
+  }
+  if ((el = on('[data-tdone]'))) {
+    const [id, tid] = el.dataset.tdone.split('|');
+    const tp = esame(id).argomenti.find(y => y.id === tid);
+    tp.fattoIl = tp.fattoIl ? null : oggi;
+    aggiorna(tp.fattoIl ? 'Argomento fatto: partono i ripassi.' : null); return;
+  }
+  if ((el = on('[data-tdel]'))) {
+    const [id, tid] = el.dataset.tdel.split('|');
+    const x = esame(id);
+    x.argomenti = x.argomenti.filter(y => y.id !== tid);
+    aggiorna(); return;
+  }
+  if ((el = on('[data-calmode]'))) { cal.modo = el.dataset.calmode; render(); return; }
+  if ((el = on('[data-calmove]'))) {
+    const n = +el.dataset.calmove;
+    if (cal.modo === 'mese') { const [y, m] = cal.rif.split('-').map(Number); const d = new Date(Date.UTC(y, m - 1 + n, 1)); cal.rif = d.toISOString().slice(0, 10); }
+    else cal.rif = addDays(cal.rif, 7 * n);
+    render(); return;
+  }
+  if (on('[data-caltoday]')) { cal.rif = oggi; render(); return; }
+  if ((el = on('[data-day]'))) { daySheet(el.dataset.day); return; }
+  if ((el = on('[data-imp]'))) {
+    const [k, d] = el.dataset.imp.split('|');
+    const lim = { oreGiorno: [0.5, 14], giorniRipasso: [1, 7] }[k];
+    S.impostazioni[k] = Math.max(lim[0], Math.min(lim[1], S.impostazioni[k] + +d));
+    aggiorna(); return;
+  }
+  if ((el = on('[data-wday]'))) {
+    const i = +el.dataset.wday, g = S.impostazioni.giorni;
+    S.impostazioni.giorni = g.includes(i) ? g.filter(x => x !== i) : [...g, i].sort();
+    aggiorna(); return;
+  }
+  if (on('[data-addpause]')) {
+    const da = $('#pDa').value, a = $('#pA').value;
+    if (!da || !a || a < da) return toast('Scegli le date (la fine dopo l\'inizio).');
+    S.impostazioni.pause.push({ id: uid(), nome: $('#pNome').value.trim(), da, a, fattore: +$('#pFatt').value });
+    aggiorna('Pausa aggiunta: piano rifatto.'); return;
+  }
+  if ((el = on('[data-delpause]'))) { S.impostazioni.pause = S.impostazioni.pause.filter(p => p.id !== el.dataset.delpause); aggiorna(); return; }
+  if ((el = on('[data-copy]'))) { copia(el.dataset.copy === 'argomenti' ? ISTRUZIONI_ARGOMENTI : ISTRUZIONI_CLAUDE); return; }
+  if (on('[data-readimport]')) {
+    anteprima = leggiImport($('#importText').value);
+    importPreview(); return;
+  }
+  if (on('[data-doimport]')) {
+    const r = unisci(S, anteprima.esami);
+    for (const x of S.esami) x.colore ??= COLORI[0];
+    applicaProposta(S, oggi);
+    sheet.close();
+    anteprima = null;
+    aggiorna(`Import fatto: ${r.aggiunti} esami nuovi, ${r.aggiornati} aggiornati.`); return;
+  }
+  if (on('[data-ics]')) { scarica('esami-gauni.ics', creaIcs(S), 'text/calendar'); toast('File .ics scaricato: aprilo per aggiungere gli eventi al calendario.'); return; }
+  if (on('[data-backup]')) { scarica(`gauni-backup-${oggi}.json`, backup(S), 'application/json'); toast('Backup salvato nei download.'); return; }
+  if (on('[data-restore]')) { $('#restoreFile').click(); return; }
+  if (on('[data-reset]')) {
+    if (!confirm('Ricominciare da capo? Si perdono argomenti, voti e piano (fai prima un backup).')) return;
+    S = statoIniziale(); applicaProposta(S, oggi); aggiorna('Ripartito con gli esami di partenza.'); return;
+  }
+});
+
+document.addEventListener('change', async e => {
+  const el = e.target;
+  if (el.dataset.ecfg) {
+    const [k, id] = el.dataset.ecfg.split('|');
+    const x = esame(id);
+    x[k] = Math.max(0, Math.min(k === 'oreCfu' ? 40 : 90, +el.value || 0));
+    if (k === 'oreCfu' && x.oreCfu < 5) x.oreCfu = 5;
+    aggiorna(); return;
+  }
+  if (el.id === 'restoreFile' && el.files[0]) {
+    try {
+      const nuovo = ripristina(await el.files[0].text());
+      if (!confirm(`Ripristinare il backup? Sostituisce i dati di questo telefono (${nuovo.esami.length} esami).`)) return;
+      S = nuovo;
+      aggiorna('Backup ripristinato.');
+    } catch (err) { toast(err.message); }
+    el.value = '';
+  }
+});
+
+// ---------------------------------------------------------------- avvio e aggiornamenti
+async function checkWebUpdate() {
+  if (APP_VERSION === 'dev' || sheet.open) return;
+  try {
+    const latest = (await (await fetch('version.txt', { cache: 'no-store' })).text()).trim();
+    if (!latest || latest === APP_VERSION || sessionStorage.getItem('reloadedFor') === latest) return;
+    sessionStorage.setItem('reloadedFor', latest);
+    location.reload();
+  } catch { /* offline */ }
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  if (today() !== oggi) render();   // è passata la mezzanotte
+  checkWebUpdate();
+});
+render();
+checkWebUpdate();
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+if (location.hostname === 'localhost') window.__u = { get S() { return S; }, render };

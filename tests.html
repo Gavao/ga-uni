@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>GAUNI · prove</title>
+  <style>
+    body { font: 14px/1.5 system-ui, sans-serif; background: #0f1020; color: #eef; padding: 16px; }
+    li { margin: 4px 0; } .ok { color: #4ade80; } .ko { color: #f87171; } small { color: #aab; display: block; }
+  </style>
+</head>
+<body>
+  <h1 id="tot">Prove…</h1>
+  <ul id="list"></ul>
+  <script type="module">
+    import risultati from './js/tests.js';
+    const ko = risultati.filter(r => !r[0]);
+    document.getElementById('tot').textContent = `${risultati.length - ko.length}/${risultati.length} prove superate`;
+    document.getElementById('list').innerHTML = risultati.map(([ok, nome, err]) => `<li class="${ok ? 'ok' : 'ko'}">${ok ? '✓' : '✗'} ${nome}${err ? `<small>${err}</small>` : ''}</li>`).join('');
+    window.risultati = risultati;
+  </script>
+</body>
+</html>
