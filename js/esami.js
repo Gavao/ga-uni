@@ -1,9 +1,22 @@
 // Esami: scelta automatica degli appelli, avvisi (conflitti, esami ravvicinati, prenotazioni), media e CFU.
 import { addDays, diffDays, ddmm } from './date.js';
 import { appelloScelto, oreTotali, capacita, QUOTE } from './pianifica.js';
+import { REGOLE, frequenza } from './pegaso.js';
 
 /** Si può ancora scegliere quell'appello? (nel futuro, e prenotabile o già prenotato) */
 export const appelloValido = (a, oggi) => a.data > oggi && (a.prenotato || !a.chiusuraPren || a.chiusuraPren >= oggi);
+/**
+ * Pegaso: si arriva in tempo al 70% di frequenza prima che chiudano le prenotazioni? (stima: le lezioni
+ * che mancano, a ore per lezione, nelle ore di studio disponibili fino alla chiusura)
+ */
+export function frequenzaInTempo(e, a, imp, oggi) {
+  const f = frequenza(e);
+  if (f == null || f >= REGOLE.frequenza || a.prenotato) return true;
+  const mancano = Math.ceil(((REGOLE.frequenza - f) / 100) * e.lezioni.length);
+  let ore = 0;
+  for (let d = oggi; d <= (a.chiusuraPren ?? a.data); d = addDays(d, 1)) ore += capacita(imp, d);
+  return ore >= mancano * (e.oreLezione ?? 1.5);
+}
 
 /**
  * Proposta automatica: per ogni esame senza voto sceglie un appello (o "salta" se proprio non ce n'è) in modo
@@ -18,7 +31,7 @@ export function proponiAppelli(state, oggi) {
   const opzioni = esami.map(e => {
     const fisso = e.sceltaManuale && (e.scelta === 'salta' || e.appelli.some(a => a.id === e.scelta && appelloValido(a, oggi)));
     if (fisso) return [e.scelta];
-    const ok = e.appelli.filter(a => appelloValido(a, oggi)).map(a => a.id);
+    const ok = e.appelli.filter(a => appelloValido(a, oggi) && frequenzaInTempo(e, a, imp, oggi)).map(a => a.id);
     return [...ok, 'salta'];
   });
   const data = (i, s) => (s === 'salta' ? null : esami[i].appelli.find(a => a.id === s).data);
@@ -109,6 +122,18 @@ export function avvisi(state, oggi, piano) {
     if (st.k === 'aperta') out.push({ livello: st.giorni != null && st.giorni <= 2 ? 'rosso' : 'verde', esameId: e.id, prenota: true, testo: `${nome(e)} (${ddmm(a.data)}): ${st.testo}${st.giorni === 0 ? ' (oggi!)' : st.giorni === 1 ? ' (domani)' : ''}.` });
     if (st.k === 'futura' && st.giorni <= 7) out.push({ livello: 'info', esameId: e.id, testo: `${nome(e)} (${ddmm(a.data)}): ${st.testo.toLowerCase()}.` });
     if (st.k === 'chiusa') out.push({ livello: 'rosso', esameId: e.id, testo: `${nome(e)} (${ddmm(a.data)}): prenotazioni chiuse e non hai prenotato. Scegli un altro appello.` });
+  }
+  // Pegaso: per prenotare serve il 70% di frequenza alle videolezioni
+  for (const { e, a } of scelti) {
+    const f = frequenza(e);
+    if (f == null || f >= REGOLE.frequenza || a.prenotato) continue;
+    const st = statoPrenotazione(a, oggi);
+    if (st.k === 'chiusa' || st.k === 'passato') continue;
+    const mancano = Math.max(1, Math.ceil(((REGOLE.frequenza - f) / 100) * e.lezioni.length));
+    const entro = a.chiusuraPren ?? a.data;
+    const giorni = diffDays(oggi, entro);
+    out.push({ livello: giorni <= 10 ? 'rosso' : 'arancio', esameId: e.id, frequenza: true, giorni,
+      testo: `${e.nome}: per prenotare serve il ${REGOLE.frequenza}% di frequenza, sei al ${f}%. Segui ancora circa ${mancano} lezioni in piattaforma entro il ${ddmm(entro)}${giorni <= 1 ? ' (impossibile in tempo: scegli un appello più avanti)' : ''}.` });
   }
   // Esami passati senza voto
   for (const e of state.esami) {

@@ -2,20 +2,34 @@
 // avere arrotondamenti strani. Le ore di ogni esame si dividono in: studio degli argomenti (più tempo ai
 // difficili), ripassi a distanza crescente, simulazioni d'esame e ripasso finale negli ultimi giorni.
 import { addDays, diffDays, weekday } from './date.js';
+import { lezioniFinale } from './pegaso.js';
 
 export const QUOTE = { studio: 0.6, ripasso: 0.15, simulazione: 0.1, finale: 0.15 };
 export const PESO = { facile: 1, medio: 1.5, difficile: 2.2 };
 export const RIPASSI = [1, 3, 7, 14];         // giorni dopo aver finito un argomento
 export const TIPI = {
-  studio: ['📖', 'Studio'], ripasso: ['🔁', 'Ripasso'], simulazione: ['📝', 'Simulazione d\'esame'], finale: ['🎯', 'Ripasso generale'],
+  studio: ['📖', 'Studio'], ripasso: ['🔁', 'Ripasso'], simulazione: ['📝', 'Simulazione d\'esame / test di autovalutazione'], finale: ['🎯', 'Ripasso generale'],
 };
 const U = 2;                                   // unità per ora (mezz'ore)
 const toU = h => Math.round(h * U);
 
 /** Appello scelto per l'esame (o null). */
 export const appelloScelto = e => e.appelli.find(a => a.id === e.scelta) ?? null;
-/** Ore di studio previste per l'esame: CFU × ore per CFU, meno la parte già studiata. */
-export const oreTotali = e => Math.round(e.cfu * (e.oreCfu ?? 25) * (1 - (e.giaStudiato ?? 0) / 100));
+/**
+ * Lezioni (Pegaso) oggetto della prova scelta: la prova intermedia esclude le ultime 10 (5 fino a 4 CFU),
+ * che sono il programma della prova finale. null se l'esame non ha l'elenco delle lezioni.
+ */
+export function lezioniProva(e) {
+  if (!e.lezioni?.length) return null;
+  const a = appelloScelto(e) ?? e.appelli[0];
+  return /intermedia/i.test(a?.tipo ?? '') ? e.lezioni.slice(0, Math.max(1, e.lezioni.length - lezioniFinale(e.cfu))) : e.lezioni;
+}
+/** Ore di studio previste: dalle lezioni (ore per lezione) se ci sono, altrimenti CFU × ore per CFU; meno la parte già studiata. */
+export function oreTotali(e) {
+  const lez = lezioniProva(e);
+  const base = lez ? (lez.length * (e.oreLezione ?? 1.5)) / QUOTE.studio : e.cfu * (e.oreCfu ?? 25);
+  return Math.round(base * (1 - (e.giaStudiato ?? 0) / 100));
+}
 /** Esami da preparare: con un appello scelto nel futuro e ancora senza voto. */
 export const esamiAttivi = (state, oggi) => state.esami.filter(e => !e.esito && appelloScelto(e) && appelloScelto(e).data > oggi);
 
@@ -31,6 +45,8 @@ export function capacita(imp, d) {
  * data in cui sono stati finiti la prima volta.
  */
 export function argomentiDi(e) {
+  const lez = lezioniProva(e);
+  if (lez) return lez.map(l => ({ id: `L${l.n}`, titolo: `Lez. ${l.n} · ${l.titolo}`, difficolta: l.difficolta ?? 'medio', fattoIl: l.fattoIl ?? null, visto: l.visto ?? 0, lezione: l }));
   if (e.argomenti?.length) return e.argomenti;
   const n = Math.max(3, Math.round(e.cfu / 1.5));
   return Array.from({ length: n }, (_, k) => ({ id: `auto${k + 1}`, titolo: `Parte ${k + 1} di ${n}`, difficolta: 'medio', fattoIl: e.autoFatti?.[`auto${k + 1}`] ?? null, auto: true }));
@@ -74,7 +90,9 @@ export function pianifica(state, oggi) {
     const target = oreArgomenti(e);
     const args = argomentiDi(e);
     // Coda degli argomenti ancora da studiare, nell'ordine del programma
-    const coda = args.filter(t => !t.fattoIl).map(t => ({ t, rest: Math.max(1, toU(target[t.id]) - toU(fatte.argomenti[t.id] ?? 0)) }));
+    // (le lezioni già viste in parte contano: resta solo la parte che manca)
+    const coda = args.filter(t => !t.fattoIl).map(t => ({ t, rest: Math.max(1, toU(target[t.id] * (1 - (t.visto ?? 0) / 100)) - toU(fatte.argomenti[t.id] ?? 0)) }));
+    need.studio = Math.min(need.studio, coda.reduce((a, c) => a + c.rest, 0));
     // Ripassi in programma per gli argomenti già finiti
     const dovuti = [];
     for (const t of args) if (t.fattoIl) {
@@ -227,8 +245,15 @@ export function segnaFatto(state, blocco, fatto, oggi) {
   if (!e) return;
   const target = oreArgomenti(e)[blocco.argomentoId] ?? 0;
   const fatte = oreFatte(state, e.id).argomenti[blocco.argomentoId] ?? 0;
-  const finito = fatte >= target - 0.25;
   const giorno = blocco.giorno <= oggi ? blocco.giorno : oggi;
+  if (/^L\d+$/.test(blocco.argomentoId)) {   // lezione Pegaso: conta anche la parte vista prima
+    const l = e.lezioni.find(x => `L${x.n}` === blocco.argomentoId);
+    if (!l) return;
+    const finito = fatte >= target * (1 - (l.visto ?? 0) / 100) - 0.25;
+    l.fattoIl = finito ? (l.fattoIl ?? giorno) : null;
+    return;
+  }
+  const finito = fatte >= target - 0.25;
   if (blocco.argomentoId.startsWith('auto')) {
     e.autoFatti ??= {};
     if (finito) e.autoFatti[blocco.argomentoId] ??= giorno; else delete e.autoFatti[blocco.argomentoId];

@@ -2,6 +2,7 @@
 // già ordinato. Lo prepara Claude a partire da quello che si copia dal portale: le istruzioni da dargli sono
 // in ISTRUZIONI_CLAUDE (pulsante "Copia istruzioni per Claude").
 import { isValid } from './date.js';
+import { espandi } from './pegaso.js';
 
 export const FORMATO = 'ga-studio-esami-v1';
 export const COLORI = ['#f472b6', '#60a5fa', '#34d399', '#fbbf24', '#a78bfa', '#fb923c', '#22d3ee', '#f87171', '#a3e635', '#e879f9', '#2dd4bf', '#facc15'];
@@ -128,3 +129,59 @@ Raggruppa i dettagli piccoli: al massimo 15-20 righe. Solo l'elenco, senza altro
 
 Programma:
 `;
+
+// ---------------------------------------------------------------- Pegaso
+/**
+ * Aggiunge agli esami l'elenco delle videolezioni (per codice) e gli altri esami del piano di studi, presi dai
+ * dati importati (state.pegaso). Si può rifare quante volte si vuole: non tocca quello che c'è già.
+ */
+export function arricchisciPegaso(state) {
+  const cat = state.pegaso;
+  if (!cat) return;
+  for (const e of state.esami) {
+    const titoli = cat.lezioni?.[e.codice?.toUpperCase()];
+    if (!titoli || e.lezioni?.length) continue;
+    e.lezioni = titoli.map((titolo, i) => ({ n: i + 1, titolo, visto: 0, fattoIl: null }));
+    e.oreLezione ??= cat.oreLezione ?? 1.5;
+  }
+  for (const [nome, cfu, anno] of cat.altri ?? []) {
+    if (state.esami.some(x => norm(x.nome) === norm(nome))) continue;
+    state.esami.push({ ...nuovoEsame({ nome, cfu, appelli: [] }, COLORI[state.esami.length % COLORI.length]), anno });
+  }
+}
+
+/**
+ * Dati presi dalla piattaforma (formato "gauni-pegaso-v1", file privato): elenco delle videolezioni per
+ * insegnamento, altri esami del piano, esami già sostenuti con il voto, frequenza ufficiale (% insegnamento)
+ * e quanto di ogni lezione è già stato visto ("100x5,40x15,20"). Restituisce un riepilogo { esiti, corsi }.
+ */
+export function importaPegaso(state, dati, oggi) {
+  let esiti = 0, corsi = 0;
+  state.pegaso = {
+    lezioni: dati.lezioni ?? state.pegaso?.lezioni ?? {},
+    altri: dati.altri ?? state.pegaso?.altri ?? [],
+    oreLezione: dati.oreLezione ?? state.pegaso?.oreLezione,
+    letto: dati.letto ?? oggi,
+  };
+  for (const x of dati.esiti ?? []) {
+    let e = state.esami.find(y => norm(y.nome) === norm(x.nome));
+    if (!e) { e = { ...nuovoEsame({ nome: x.nome, cfu: x.cfu, appelli: [] }, COLORI[state.esami.length % COLORI.length]), anno: x.anno }; state.esami.push(e); }
+    e.esito = { voto: Number(x.voto), lode: !!x.lode, data: x.data ?? null };
+    esiti++;
+  }
+  arricchisciPegaso(state);
+  for (const e of state.esami) {
+    const cod = e.codice?.toUpperCase();
+    if (dati.frequenza?.[cod] != null) e.frequenza = Number(dati.frequenza[cod]);
+    const viste = dati.viste?.[cod];
+    if (!viste || !e.lezioni) continue;
+    espandi(viste).forEach((v, i) => {
+      const l = e.lezioni[i];
+      if (!l) return;
+      l.visto = Math.max(l.visto ?? 0, v);
+      if (l.visto >= 100) l.fattoIl ??= oggi;
+    });
+    corsi++;
+  }
+  return { esiti, corsi };
+}

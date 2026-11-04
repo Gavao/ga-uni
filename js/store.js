@@ -1,6 +1,6 @@
 // Stato dell'app salvato nel telefono (localStorage), con backup in JSON.
 import { SEED } from './seed.js';
-import { leggiImport, unisci } from './importa.js';
+import { leggiImport, unisci, arricchisciPegaso } from './importa.js';
 
 const KEY = 'gauni';
 export const IMPOSTAZIONI = { oreGiorno: 4, giorni: [0, 1, 2, 3, 4, 5], pause: [], giorniRipasso: 3 };
@@ -9,6 +9,7 @@ export const IMPOSTAZIONI = { oreGiorno: 4, giorni: [0, 1, 2, 3, 4, 5], pause: [
 export function statoIniziale() {
   const state = { versione: 1, esami: [], impostazioni: structuredClone(IMPOSTAZIONI), piano: null, fatti: [] };
   unisci(state, leggiImport(JSON.stringify(SEED)).esami);
+  arricchisciPegaso(state);
   return state;
 }
 export function carica() {
@@ -25,6 +26,7 @@ function migra(s) {
   s.impostazioni = { ...IMPOSTAZIONI, ...s.impostazioni };
   s.fatti ??= [];
   for (const e of s.esami) { e.argomenti ??= []; e.oreCfu ??= 25; e.giaStudiato ??= 0; }
+  arricchisciPegaso(s);   // lezioni Pegaso e piano di studi completo, anche sulle partite già iniziate
   return s;
 }
 /** Backup: tutto lo stato, leggibile. */

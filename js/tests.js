@@ -1,7 +1,8 @@
 // Prove automatiche di import, scelta degli appelli, piano di studio ed export .ics. Si aprono da tests.html.
-import { leggiImport, unisci, leggiArgomenti, nuovoEsame } from './importa.js';
+import { leggiImport, unisci, leggiArgomenti, nuovoEsame, importaPegaso } from './importa.js';
 import { proponiAppelli, avvisi, carriera, statoPrenotazione } from './esami.js';
-import { pianifica, ripianifica, segnaFatto, capacita, oreTotali, QUOTE, appelloScelto } from './pianifica.js';
+import { pianifica, ripianifica, segnaFatto, capacita, oreTotali, QUOTE, appelloScelto, lezioniProva, argomentiDi } from './pianifica.js';
+import { lezioniFinale, frequenza, espandi } from './pegaso.js';
 import { creaIcs } from './ics.js';
 import { statoIniziale } from './store.js';
 import { addDays, diffDays, weekday } from './date.js';
@@ -86,7 +87,7 @@ test('scelta: mai due esami lo stesso giorno (Probabilità/Sicurezza, Tec. Web/R
   const p = proponiAppelli(s, OGGI);
   const date = s.esami.map(e => p[e.id]).filter(x => x !== 'salta').map((id, i) => s.esami.flatMap(e => e.appelli).find(a => a.id === id).data);
   eq(new Set(date).size, date.length, 'date ripetute');
-  eq(Object.values(p).filter(x => x === 'salta').length, 0, 'nessun esame saltato');
+  eq(s.esami.filter(e => e.appelli.length && p[e.id] === 'salta').length, 0, 'nessun esame saltato');
 });
 test('scelta: esami "gemelli" distanziati il più possibile (8 e 12 marzo, 23 e 27 agosto)', () => {
   const s = statoIniziale();
@@ -232,7 +233,7 @@ test('media ponderata e lode', () => {
 });
 test('ics: esami e scadenze di prenotazione', () => {
   const s = statoIniziale();
-  for (const e of s.esami) e.scelta = e.appelli[e.appelli.length - 1].id;
+  for (const e of s.esami) if (e.appelli.length) e.scelta = e.appelli[e.appelli.length - 1].id;
   const ics = creaIcs(s, new Date('2026-11-03T10:00:00Z'));
   ok(ics.startsWith('BEGIN:VCALENDAR') && ics.trim().endsWith('END:VCALENDAR'));
   eq((ics.match(/BEGIN:VEVENT/g) ?? []).length, 30);
@@ -249,6 +250,73 @@ test('stato iniziale: piano completo senza errori e in tempi brevi', () => {
   ok(ms < 2000, `${Math.round(ms)} ms`);
   ok(s.piano.blocchi.length > 100);
   ok(appelloScelto(s.esami[0]));
+});
+
+// ---------------------------------------------------------------- Pegaso
+const IA = '0312509INF01IINM';
+/** Catalogo finto (i titoli veri restano nel file privato): 45 lezioni di IA e 2 esami del terzo anno. */
+const CAT = { formato: 'gauni-pegaso-v1', oreLezione: 1.5, lezioni: { [IA]: Array.from({ length: 45 }, (_, i) => `Lezione di prova ${i + 1}`) }, altri: [['Esame A', 6, 3], ['Esame B', 12, 3]] };
+const conCatalogo = () => { const s = statoIniziale(); importaPegaso(s, CAT, OGGI); return s; };
+
+test('Pegaso: senza dati importati niente lezioni (l\'app pubblica è generica)', () => {
+  const s = statoIniziale();
+  ok(s.esami.every(e => !e.lezioni), 'nessuna lezione');
+  eq(s.esami.length, 10);
+});
+test('Pegaso: il catalogo importato aggiunge lezioni e altri esami del piano', () => {
+  const s = conCatalogo();
+  const ia = s.esami.find(e => e.codice === IA);
+  eq(ia.lezioni.length, 45);
+  eq(ia.oreLezione, 1.5);
+  eq(s.esami.length, 12);
+  eq(s.esami.reduce((a, e) => a + e.cfu, 0), 84 + 18);
+});
+test('Pegaso: la prova intermedia esclude le ultime 10 lezioni (5 fino a 4 CFU)', () => {
+  const s = conCatalogo();
+  const ia = s.esami.find(e => e.codice === IA);
+  ia.scelta = ia.appelli[0].id;
+  eq(lezioniProva(ia).length, 35);
+  eq(argomentiDi(ia)[0].id, 'L1');
+  eq(oreTotali(ia), Math.round(35 * 1.5 / QUOTE.studio));
+  eq(lezioniFinale(4), 5);
+});
+test('Pegaso: import personale (voti, frequenza, lezioni viste in forma compatta)', () => {
+  const s = statoIniziale();
+  const r = importaPegaso(s, { ...CAT, esiti: [{ nome: 'Programmazione', cfu: 12, voto: 29 }, { nome: 'Basi di dati', cfu: 9, voto: 18 }],
+    frequenza: { [IA]: 24 }, viste: { [IA]: '100x5,40x15,20,0x24' } }, OGGI);
+  eq(r, { esiti: 2, corsi: 1 });
+  const ia = s.esami.find(e => e.codice === IA);
+  eq(ia.lezioni.filter(l => l.fattoIl).length, 5);
+  eq(ia.lezioni[5].visto, 40);
+  eq(frequenza(ia), 25);   // media delle lezioni (24,9%): la piattaforma tronca a 24
+  const c = carriera(s);
+  eq(c.cfu, 21);
+  vicino(c.media, (29 * 12 + 18 * 9) / 21, 1e-9);
+  eq(espandi('100x2,40,0x3'), [100, 100, 40, 0, 0, 0]);
+});
+test('Pegaso: lezioni già viste in parte riducono le ore da pianificare', () => {
+  const s = conCatalogo();
+  const ia = s.esami.find(e => e.codice === IA);
+  for (const e of s.esami) e.scelta = 'salta';
+  ia.scelta = ia.appelli[2].id;
+  const prima = pianifica(s, OGGI).blocchi.filter(b => b.tipo === 'studio').reduce((a, b) => a + b.ore, 0);
+  importaPegaso(s, { viste: { [IA]: '100x5,40x15,20,0x24' } }, OGGI);
+  const dopo = pianifica(s, OGGI).blocchi.filter(b => b.tipo === 'studio').reduce((a, b) => a + b.ore, 0);
+  ok(dopo < prima - 10, `prima ${prima} h, dopo ${dopo} h`);
+  ok(!pianifica(s, OGGI).blocchi.some(b => b.argomentoId === 'L1' && b.tipo === 'studio'), 'lezione 1 già fatta');
+});
+test('Pegaso: avviso e appello escluso se la frequenza non arriva al 70% in tempo', () => {
+  const s = conCatalogo();
+  const ia = s.esami.find(e => e.codice === IA);
+  ia.scelta = ia.appelli[0].id;
+  ia.frequenza = 24;
+  ok(avvisi(s, OGGI, null).some(a => a.frequenza && a.esameId === ia.id && a.testo.includes('24%')));
+  ok(frequenza(ia) != null);
+  ia.frequenza = 80;
+  ok(!avvisi(s, OGGI, null).some(a => a.frequenza && a.esameId === ia.id));
+  const ux = s.esami.find(e => e.nome === 'User experience');
+  importaPegaso(s, { lezioni: { [ux.codice]: Array(30).fill('x') }, frequenza: { [ux.codice]: 0 } }, OGGI);
+  eq(proponiAppelli(s, '2026-11-04')[ux.id], 'salta', 'User experience: 0% e prenotazioni che chiudono oggi');
 });
 
 export default risultati;

@@ -3,8 +3,9 @@
 import { APP_VERSION } from './version.js';
 import { carica, salva, statoIniziale, backup, ripristina } from './store.js';
 import { today, addDays, diffDays, weekday, ddmm, ddmmyyyy, longDate, shortDate, relDays, monthName, GIORNI_BREVI } from './date.js';
-import { leggiImport, unisci, leggiArgomenti, ISTRUZIONI_CLAUDE, ISTRUZIONI_ARGOMENTI, COLORI, uid } from './importa.js';
-import { ripianifica, segnaFatto, oreIndietro, oreTotali, oreFatte, argomentiDi, appelloScelto, capacita, oreNecessarie, TIPI } from './pianifica.js';
+import { leggiImport, unisci, leggiArgomenti, importaPegaso, ISTRUZIONI_CLAUDE, ISTRUZIONI_ARGOMENTI, COLORI, uid } from './importa.js';
+import { REGOLE, lezioniFinale, frequenza } from './pegaso.js';
+import { ripianifica, segnaFatto, oreIndietro, oreTotali, oreFatte, argomentiDi, appelloScelto, capacita, oreNecessarie, lezioniProva, TIPI } from './pianifica.js';
 import { applicaProposta, avvisi, carriera, statoPrenotazione, appelloValido } from './esami.js';
 import { creaIcs } from './ics.js';
 
@@ -51,7 +52,7 @@ function pageOggi() {
   const prossimi = S.esami.filter(e => !e.esito && appelloScelto(e) && appelloScelto(e).data >= oggi).sort((a, b) => appelloScelto(a).data.localeCompare(appelloScelto(b).data));
   const next = prossimi[0];
   const tutti = avvisiOra();
-  const av = tutti.filter(a => !a.deficit);   // le ore che mancano: un solo riepilogo qui sotto
+  const av = tutti.filter(a => !a.deficit && !(a.frequenza && a.giorni > 30));   // ore che mancano: un riepilogo qui sotto; frequenza: solo le scadenze vicine
   const need = tutti.some(a => a.deficit) ? oreNecessarie(S, oggi) : null;
   const c = carriera(S);
   const indietro = oreIndietro(S, oggi);
@@ -89,7 +90,7 @@ function riepilogoOre(need) {
     ${need.ore > imp.oreGiorno ? `<p style="margin:0 0 8px">🟠 Con <b>${ore(imp.oreGiorno)} al giorno</b> non ci stai dentro: per tutti gli esami servirebbero circa <b>${ore(need.ore)} al giorno</b>.</p>
       <button class="secondary small" data-setore="${need.ore}">Studia ${ore(need.ore)} al giorno</button>` : ''}
     ${nomi.length ? `<p style="margin:8px 0 0">🔴 <b>${esc(nomi.join(', '))}</b>: le ore previste non entrano nemmeno studiando tutto il giorno. Se hai già seguito il corso, indica quanto hai già studiato nell'esame (le ore scendono), oppure scegli un appello più avanti.</p>` : ''}
-    <p class="note">Le ore previste sono ${S.esami[0]?.oreCfu ?? 25} per CFU: puoi cambiarle esame per esame.</p></div>`;
+    <p class="note">Le ore si calcolano dalle lezioni (2 h ciascuna tra video, dispensa e test): se ti basta meno tempo, cambialo nella pagina dell'esame.</p></div>`;
 }
 function alertHtml(a) {
   const e = esame(a.esameId);
@@ -109,14 +110,19 @@ function taskHtml(b, readonly = false) {
 
 // ---------------------------------------------------------------- Esami
 function pageEsami() {
-  const data = e => (e.esito ? 'z' + (e.esito.data ?? '') : appelloScelto(e)?.data ?? 'y');
-  const lista = [...S.esami].sort((a, b) => data(a).localeCompare(data(b)));
+  const data = e => appelloScelto(e)?.data ?? 'z';
+  const daFare = S.esami.filter(e => !e.esito && e.appelli.length).sort((a, b) => data(a).localeCompare(data(b)));
+  const senza = S.esami.filter(e => !e.esito && !e.appelli.length);
+  const superati = S.esami.filter(e => e.esito);
   const av = avvisiOra().filter(a => !a.deficit);   // le ore che mancano si vedono nella scheda di ogni esame
-  view.innerHTML = `<header class="top"><span class="brand">🎓</span><h1>Esami<small>${S.esami.length} esami · ${S.esami.reduce((a, e) => a + e.cfu, 0)} CFU</small></h1></header>
+  const c = carriera(S);
+  view.innerHTML = `<header class="top"><span class="brand">🎓</span><h1>Esami<small>${c.cfu}/${c.tot} CFU · ${superati.length}/${S.esami.length} esami superati</small></h1></header>
     <button class="primary" data-propose>✨ Proponi gli appelli migliori</button>
     <p class="note">Sceglie per te: mai due esami lo stesso giorno, esami vicini il più distanti possibile, abbastanza ore di studio per ognuno. Le scelte fatte a mano (📌) restano.</p>
     ${av.length ? `<div class="alerts">${av.map(alertHtml).join('')}</div>` : ''}
-    ${lista.map(e => examCard(e)).join('')}`;
+    <h2>Con appelli <small>${daFare.length}</small></h2>${daFare.map(examCard).join('')}
+    ${senza.length ? `<h2>Appelli non ancora pubblicati <small>${senza.length}</small></h2>${senza.map(examCard).join('')}` : ''}
+    ${superati.length ? `<h2>Superati <small>media ${fmtMedia(c.media)}</small></h2>${superati.map(examCard).join('')}` : ''}`;
 }
 function examCard(e) {
   const a = appelloScelto(e);
@@ -125,6 +131,10 @@ function examCard(e) {
   if (e.esito) {
     return `<a class="exam passed" style="--c:${e.colore}" href="#/esame/${e.id}"><div class="exam-head"><b>${esc(e.nome)}</b><small>${e.cfu} CFU</small></div>
       <div class="sub">✅ Superato con <b>${e.esito.voto}${e.esito.lode ? ' e lode' : ''}</b>${e.esito.data ? ` il ${ddmmyyyy(e.esito.data)}` : ''}</div></a>`;
+  }
+  if (!e.appelli.length) {
+    return `<a class="exam" style="--c:${e.colore}" href="#/esame/${e.id}"><div class="exam-head"><b>${esc(e.nome)}</b><small>${e.cfu} CFU ›</small></div>
+      <div class="sub">${e.anno ? `${e.anno}° anno · ` : ''}${e.lezioni ? `${e.lezioni.filter(l => l.fattoIl).length}/${e.lezioni.length} lezioni` : 'nessun appello per ora'}</div></a>`;
   }
   const chips = e.appelli.map(x => {
     const st = statoPrenotazione(x, oggi);
@@ -135,7 +145,7 @@ function examCard(e) {
     <div class="chips">${chips}<button class="chip ${e.scelta === 'salta' ? 'on' : ''}" data-pick="${e.id}|salta">Salta</button></div>
     ${a ? `<div class="sub">${esc(longDate(a.data))} · ${relDays(oggi, a.data)} · ${esc(statoPrenotazione(a, oggi).testo)}</div>
       <div class="bar"><i style="width:${Math.min(100, (f / Math.max(1, H)) * 100)}%"></i></div>
-      <div class="sub">${done}/${args.length} argomenti · ${ore(f)} di ${ore(H)}${S.piano?.mancanti?.[e.id] ? ` · <span style="color:var(--red)">⚠️ mancano ~${S.piano.mancanti[e.id]} h</span>` : ''}</div>` : '<div class="sub">Non in programma</div>'}</div>`;
+      <div class="sub">${done}/${args.length} ${e.lezioni ? 'lezioni' : 'argomenti'} · ${ore(f)} di ${ore(H)}${frequenza(e) != null ? ` · frequenza ${frequenza(e)}%${frequenza(e) < REGOLE.frequenza ? ' (serve 70% per prenotare)' : ' ✓'}` : ''}${S.piano?.mancanti?.[e.id] ? ` · <span style="color:var(--red)">⚠️ mancano ~${S.piano.mancanti[e.id]} h</span>` : ''}</div>` : '<div class="sub">Non in programma</div>'}</div>`;
 }
 
 // ---------------------------------------------------------------- Dettaglio esame
@@ -162,7 +172,7 @@ function pageEsame(id) {
       <button class="secondary wide" data-pick="${e.id}|salta">${e.scelta === 'salta' ? '✓ Saltato' : 'Salta questo esame'}</button>
       ${e.sceltaManuale ? `<button class="link" data-unpin="${e.id}">📌 Scelta fatta a mano: lascia decidere all'app</button>` : ''}</div>
 
-    <h2>Studio <small>${ore(f.totale)} fatte di ${ore(H)}</small></h2>
+    ${e.lezioni ? sezionePegaso(e, H, f, mancanti) : `<h2>Studio <small>${ore(f.totale)} fatte di ${ore(H)}</small></h2>
     <div class="card" style="--c:${e.colore}">
       <div class="bar"><i style="width:${Math.min(100, (f.totale / Math.max(1, H)) * 100)}%"></i></div>
       ${mancanti ? `<p class="note" style="color:var(--red)">⚠️ Con il ritmo attuale mancano circa ${mancanti} h prima dell'esame.</p>` : ''}
@@ -179,7 +189,7 @@ function pageEsame(id) {
     <label class="field"><span>Aggiungi argomenti (uno per riga; "(difficile)" o "(facile)" alla fine per la difficoltà)</span>
       <textarea id="newTopics" placeholder="Ricerca nello spazio degli stati (difficile)&#10;Logica proposizionale (facile)&#10;Reti bayesiane"></textarea></label>
     <div class="row-buttons"><button class="secondary" data-addtopics="${e.id}">Aggiungi</button><button class="secondary" data-copy="argomenti">📋 Istruzioni per Claude</button></div>
-    <p class="note">Con "Istruzioni per Claude" copi una richiesta da incollare in Claude insieme al programma del corso: ti restituisce l'elenco pronto da incollare qui.</p>
+    <p class="note">Con "Istruzioni per Claude" copi una richiesta da incollare in Claude insieme al programma del corso: ti restituisce l'elenco pronto da incollare qui.</p>`}
 
     ${e.esito ? '' : `<h2>Esame superato?</h2>
       <div class="card"><div class="inline"><label class="field"><span>Voto</span><select id="voto">${Array.from({ length: 13 }, (_, i) => 30 - i).map(v => `<option>${v}</option>`).join('')}</select></label>
@@ -187,6 +197,48 @@ function pageEsame(id) {
         <button class="primary" data-pass="${e.id}">Salva il voto</button></div>`}
     <button class="link danger" data-delexam="${e.id}">Elimina questo esame</button>`;
   void a;
+}
+
+/** Esame Pegaso: frequenza, com'è fatta la prova, ore per lezione e l'elenco delle videolezioni. */
+function sezionePegaso(e, H, f, mancanti) {
+  const freq = frequenza(e);
+  const k = lezioniFinale(e.cfu), n = e.lezioni.length;
+  const a = appelloScelto(e) ?? e.appelli[0];
+  const intermedia = /intermedia/i.test(a?.tipo ?? '');
+  const prova = lezioniProva(e);
+  const fatte = e.lezioni.filter(l => l.fattoIl).length;
+  const R = REGOLE;
+  return `${freq == null ? `<h2>Frequenza</h2><div class="card"><p class="note">Per prenotare serve il ${R.frequenza}% di frequenza alle videolezioni. La tua non è ancora caricata: importa i dati della Pegaso (Altro → Importa) oppure segna le lezioni fatte qui sotto.</p></div>` : `<h2>Frequenza <small>${freq}% · serve il ${R.frequenza}% per prenotare</small></h2>
+    <div class="card" style="--c:${freq >= R.frequenza ? 'var(--green)' : e.colore}">
+      <div class="bar"><i style="width:${freq}%"></i></div>
+      <p class="note">${freq >= R.frequenza ? '✓ Puoi prenotare le prove di questo esame.' : `Per prenotare devi arrivare al ${R.frequenza}%: circa ${Math.max(1, Math.ceil(((R.frequenza - freq) / 100) * n))} lezioni ancora da seguire in piattaforma.`}</p>
+      ${(() => {   // lezioni con il video già visto ma non al 100%: basta cliccare "Obiettivi" e fare il test
+        const meta = e.lezioni.filter(l => !l.fattoIl && l.visto > 0 && l.visto < 100);
+        return meta.length && freq < R.frequenza ? `<p class="note">💡 In ${meta.length} lezioni (${meta[0].n}-${meta[meta.length - 1].n}) hai già visto il video: per portarle al 100% clicca su <b>Obiettivi</b> e fai il <b>test di fine lezione</b>. La frequenza sale subito.</p>` : '';
+      })()}
+      <p class="note">In piattaforma una lezione arriva al 100% solo se finisci il video, clicchi su "Obiettivi" e fai il test di fine lezione.</p>
+    </div>`}
+    <h2>Com'è l'esame</h2>
+    <div class="card">
+      <p style="margin:0 0 6px">${intermedia ? '👉 ' : ''}<b>Prova intermedia</b> (online): ${R.intermedia.domande} domande a risposta multipla in ${R.intermedia.minuti} minuti, servono almeno ${R.intermedia.minimo}/${R.intermedia.domande}. Lezioni 1-${n - k}. Vale ${R.intermedia.validita} giorni.</p>
+      <p style="margin:0 0 6px"><b>Prova finale</b> (in presenza): ${R.finale.domande} domande in ${R.finale.minuti} minuti sulle ultime ${k} lezioni (${n - k + 1}-${n}); la 7ª vale la lode. Con la intermedia devi arrivare a 18/30.</p>
+      <p style="margin:0 0 6px"><b>Prova unica</b> (tablet, in presenza): ${R.unica.domande} domande in ${R.unica.minuti} minuti su tutto il programma.</p>
+      <p class="note">💡 Seguendo le lezioni in diretta (didattica sincrona) prendi fino a ${R.premiali} punti in più sulla prova intermedia.</p>
+    </div>
+    <h2>Studio <small>${ore(f.totale)} fatte di ${ore(H)}</small></h2>
+    <div class="card" style="--c:${e.colore}">
+      <div class="bar"><i style="width:${Math.min(100, (f.totale / Math.max(1, H)) * 100)}%"></i></div>
+      ${mancanti ? `<p class="note" style="color:var(--red)">⚠️ Con il ritmo attuale mancano circa ${mancanti} h prima dell'esame.</p>` : ''}
+      <label class="field"><span>Ore per lezione (video + dispensa + test di fine lezione)</span><input type="number" min="0.5" max="6" step="0.5" value="${e.oreLezione ?? 1.5}" data-ecfg="oreLezione|${e.id}"></label>
+      <label class="field"><span>Già studiato / ripassato altrove: <b>${e.giaStudiato}%</b></span><input type="range" min="0" max="90" step="10" value="${e.giaStudiato}" data-ecfg="giaStudiato|${e.id}"></label>
+      <p class="note">${prova.length} lezioni per ${intermedia ? 'la prova intermedia' : 'questa prova'} × ${ore(e.oreLezione ?? 1.5)}, più ripassi, test e ripasso finale = <b>${ore(H)}</b>.</p>
+    </div>
+    <h2>Lezioni <small>${fatte}/${n} fatte</small></h2>
+    <p class="note">Tocca ✓ quando hai finito una lezione (video, dispensa e test): partono i ripassi. La % è quanto avevi già visto in piattaforma. Tocca la difficoltà per cambiarla.</p>
+    <div class="list">${e.lezioni.map((l, i) => `${i === n - k ? `<p class="note" style="margin-top:12px">⬇️ Ultime ${k} lezioni: programma della prova finale</p>` : ''}
+      <div class="topic ${l.fattoIl ? 'done' : ''}" style="--c:${e.colore}${intermedia && i >= n - k ? ';opacity:.6' : ''}">
+      <button class="tick ${l.fattoIl ? 'on' : ''}" data-tdone="${e.id}|L${l.n}">${l.fattoIl ? '✓' : ''}</button><span class="t">${l.n}. ${esc(l.titolo)}${!l.fattoIl && l.visto ? ` <small class="note">(${l.visto}%)</small>` : ''}</span>
+      <button class="diff ${l.difficolta ?? 'medio'}" data-tdiff="${e.id}|L${l.n}">${l.difficolta ?? 'medio'}</button></div>`).join('')}</div>`;
 }
 
 // ---------------------------------------------------------------- Calendario
@@ -265,6 +317,10 @@ function pageAltro() {
       <label class="field"><span>Ritmo</span><select id="pFatt"><option value="0">Niente studio</option><option value="0.5">Metà ore</option><option value="0.25">Un quarto</option></select></label>
       <button class="secondary wide" data-addpause>Aggiungi la pausa</button>
     </div>
+    <h2>Dati della Pegaso</h2>
+    <p class="note">${S.pegaso ? `Caricati il ${ddmmyyyy(S.pegaso.letto)}: videolezioni di ${Object.keys(S.pegaso.lezioni ?? {}).length} corsi, voti e frequenza.` : 'Carica il file con le videolezioni dei tuoi corsi, i voti e la frequenza: il piano diventa lezione per lezione.'} Il file resta solo su questo telefono.</p>
+    <button class="secondary wide" data-pegasofile>📂 Carica il file dei dati Pegaso</button>
+    <input type="file" id="pegasoFile" accept=".json,application/json,text/plain" hidden>
     <h2>Importa esami</h2>
     <p class="note">Copia gli appelli dal portale, incollali in Claude insieme alle istruzioni (pulsante qui sotto) e incolla qui il risultato. Gli esami già presenti si aggiornano senza perdere argomenti e voti.</p>
     <button class="secondary wide" data-copy="esami">📋 Copia istruzioni per Claude</button>
@@ -282,6 +338,15 @@ function pageAltro() {
       Su iPhone: apri la pagina in Safari → Condividi → "Aggiungi alla schermata Home". Su Android: menu di Chrome → "Installa app".</p>
     <button class="link danger" data-reset>Ricomincia da capo</button>`;
 }
+/** Dati personali dalla piattaforma Pegaso (voti, frequenza, lezioni viste): incollati in Altro o aperti da un link. */
+function importaPersonale(testo) {
+  let dati;
+  try { dati = JSON.parse(testo.slice(testo.indexOf('{'), testo.lastIndexOf('}') + 1)); } catch { toast('Il testo non è valido.'); return; }
+  const r = importaPegaso(S, dati, oggi);
+  applicaProposta(S, oggi);
+  if (sheet.open) sheet.close();
+  aggiorna(`Dati Pegaso caricati: ${r.esiti} esami superati e l'avanzamento di ${r.corsi} corsi.`);
+}
 function importPreview() {
   const { esami, errori } = anteprima;
   sheet.innerHTML = `<div class="sheet-head"><h2>Anteprima import</h2><button class="icon" data-close>✕</button></div>
@@ -297,6 +362,14 @@ function render() {
   oggi = today();
   const h = location.hash.replace(/^#\/?/, '');
   const [page, id] = h.split('/');
+  if (page === 'importa' && id) {   // link con i dati personali (restano nel telefono: la parte dopo # non va su internet)
+    history.replaceState(null, '', location.pathname);
+    let testo = '';
+    try { testo = new TextDecoder().decode(Uint8Array.from(atob(id.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0))); } catch { /* link rovinato */ }
+    if (testo && confirm('Caricare in GAUNI i tuoi dati della Pegaso (voti, frequenza, lezioni viste)?')) importaPersonale(testo);
+    else render();
+    return;
+  }
   const tab = page === 'esame' ? 'esami' : page || 'oggi';
   for (const a of document.querySelectorAll('#nav a')) a.classList.toggle('on', a.dataset.tab === tab);
   if (page === 'esami') pageEsami();
@@ -425,15 +498,16 @@ document.addEventListener('click', async e => {
   }
   if ((el = on('[data-tdiff]'))) {
     const [id, tid] = el.dataset.tdiff.split('|');
-    const tp = esame(id).argomenti.find(y => y.id === tid);
+    const x = esame(id), tp = /^L\d+$/.test(tid) ? x.lezioni.find(y => `L${y.n}` === tid) : x.argomenti.find(y => y.id === tid);
+    tp.difficolta ??= 'medio';
     tp.difficolta = { facile: 'medio', medio: 'difficile', difficile: 'facile' }[tp.difficolta];
     aggiorna(); return;
   }
   if ((el = on('[data-tdone]'))) {
     const [id, tid] = el.dataset.tdone.split('|');
-    const tp = esame(id).argomenti.find(y => y.id === tid);
+    const x = esame(id), tp = /^L\d+$/.test(tid) ? x.lezioni.find(y => `L${y.n}` === tid) : x.argomenti.find(y => y.id === tid);
     tp.fattoIl = tp.fattoIl ? null : oggi;
-    aggiorna(tp.fattoIl ? 'Argomento fatto: partono i ripassi.' : null); return;
+    aggiorna(tp.fattoIl ? `${/^L/.test(tid) ? 'Lezione fatta' : 'Argomento fatto'}: partono i ripassi.` : null); return;
   }
   if ((el = on('[data-tdel]'))) {
     const [id, tid] = el.dataset.tdel.split('|');
@@ -470,7 +544,9 @@ document.addEventListener('click', async e => {
   if ((el = on('[data-delpause]'))) { S.impostazioni.pause = S.impostazioni.pause.filter(p => p.id !== el.dataset.delpause); aggiorna(); return; }
   if ((el = on('[data-copy]'))) { copia(el.dataset.copy === 'argomenti' ? ISTRUZIONI_ARGOMENTI : ISTRUZIONI_CLAUDE); return; }
   if (on('[data-readimport]')) {
-    anteprima = leggiImport($('#importText').value);
+    const testo = $('#importText').value;
+    if (/gauni-pegaso-v1/.test(testo)) { importaPersonale(testo); return; }
+    anteprima = leggiImport(testo);
     importPreview(); return;
   }
   if (on('[data-doimport]')) {
@@ -487,6 +563,7 @@ document.addEventListener('click', async e => {
   }
   if (on('[data-backup]')) { scarica(`gauni-backup-${oggi}.json`, backup(S), 'application/json'); if (!native) toast('Backup salvato nei download.'); return; }
   if (on('[data-restore]')) { $('#restoreFile').click(); return; }
+  if (on('[data-pegasofile]')) { $('#pegasoFile').click(); return; }
   if (on('[data-reset]')) {
     if (!confirm('Ricominciare da capo? Si perdono argomenti, voti e piano (fai prima un backup).')) return;
     S = statoIniziale(); applicaProposta(S, oggi); aggiorna('Ripartito con gli esami di partenza.'); return;
@@ -498,10 +575,11 @@ document.addEventListener('change', async e => {
   if (el.dataset.ecfg) {
     const [k, id] = el.dataset.ecfg.split('|');
     const x = esame(id);
-    x[k] = Math.max(0, Math.min(k === 'oreCfu' ? 40 : 90, +el.value || 0));
-    if (k === 'oreCfu' && x.oreCfu < 5) x.oreCfu = 5;
+    const lim = { oreCfu: [5, 40], giaStudiato: [0, 90], oreLezione: [0.5, 6] }[k] ?? [0, 90];
+    x[k] = Math.max(lim[0], Math.min(lim[1], +el.value || 0));
     aggiorna(); return;
   }
+  if (el.id === 'pegasoFile' && el.files[0]) { importaPersonale(await el.files[0].text()); el.value = ''; return; }
   if (el.id === 'restoreFile' && el.files[0]) {
     try {
       const nuovo = ripristina(await el.files[0].text());
