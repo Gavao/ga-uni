@@ -19,7 +19,7 @@ const OGGI = '2026-11-03';
 
 /** Stato di prova: esami semplici con un appello ciascuno (scelto). */
 function stato(esami, imp = {}) {
-  const s = { versione: 1, esami: [], impostazioni: { oreGiorno: 4, giorni: [0, 1, 2, 3, 4, 5, 6], pause: [], giorniRipasso: 3, ...imp }, piano: null, fatti: [] };
+  const s = { versione: 1, esami: [], impostazioni: { oreGiorno: 4, giorni: [0, 1, 2, 3, 4, 5, 6], pause: [], giorniRipasso: 3, unoAllaVolta: false, ...imp }, piano: null, fatti: [] };
   esami.forEach((e, i) => {
     const x = nuovoEsame({ nome: e.nome ?? `Esame ${i + 1}`, cfu: e.cfu ?? 6, appelli: (e.date ?? [e.data]).map(d => ({ data: d, ora: '09:30', aperturaPren: addDays(d, -20), chiusuraPren: addDays(d, -2) })) }, '#fff');
     x.oreCfu = e.oreCfu ?? 25;
@@ -299,11 +299,11 @@ test('Pegaso: lezioni già viste in parte riducono le ore da pianificare', () =>
   const ia = s.esami.find(e => e.codice === IA);
   for (const e of s.esami) e.scelta = 'salta';
   ia.scelta = ia.appelli[2].id;
-  const prima = pianifica(s, OGGI).blocchi.filter(b => b.tipo === 'studio').reduce((a, b) => a + b.ore, 0);
+  const prima = pianifica(s, OGGI).blocchi.filter(b => b.tipo === 'video').reduce((a, b) => a + b.ore, 0);
   importaPegaso(s, { viste: { [IA]: '100x5,40x15,20,0x24' } }, OGGI);
-  const dopo = pianifica(s, OGGI).blocchi.filter(b => b.tipo === 'studio').reduce((a, b) => a + b.ore, 0);
+  const dopo = pianifica(s, OGGI).blocchi.filter(b => b.tipo === 'video').reduce((a, b) => a + b.ore, 0);
   ok(dopo < prima - 10, `prima ${prima} h, dopo ${dopo} h`);
-  ok(!pianifica(s, OGGI).blocchi.some(b => b.argomentoId === 'L1' && b.tipo === 'studio'), 'lezione 1 già fatta');
+  ok(!pianifica(s, OGGI).blocchi.some(b => b.argomentoId === 'L1' && b.tipo === 'video'), 'lezione 1 già fatta');
 });
 test('Pegaso: avviso e appello escluso se la frequenza non arriva al 70% in tempo', () => {
   const s = conCatalogo();
@@ -317,6 +317,58 @@ test('Pegaso: avviso e appello escluso se la frequenza non arriva al 70% in temp
   const ux = s.esami.find(e => e.nome === 'User experience');
   importaPegaso(s, { lezioni: { [ux.codice]: Array(30).fill('x') }, frequenza: { [ux.codice]: 0 } }, OGGI);
   eq(proponiAppelli(s, '2026-11-04')[ux.id], 'salta', 'User experience: 0% e prenotazioni che chiudono oggi');
+});
+
+// ---------------------------------------------------------------- un esame alla volta
+const seq = s => { s.impostazioni.unoAllaVolta = true; return s; };
+const giorniDi = (bl, id, tipi) => bl.filter(b => b.esameId === id && (!tipi || tipi.includes(b.tipo))).map(b => b.giorno).sort();
+test('un esame alla volta: prima le videolezioni, poi il ripasso, poi quiz e simulazioni, alla fine il ripasso generale', () => {
+  const s = seq(stato([{ cfu: 6, data: '2027-03-01', argomenti: 'A\nB\nC\nD\nE\nF' }]));
+  const bl = pianifica(s, OGGI).blocchi, id = s.esami[0].id;
+  const ultimoVideo = giorniDi(bl, id, ['video']).pop(), primoRip = giorniDi(bl, id, ['ripasso'])[0];
+  const ultimoRip = giorniDi(bl, id, ['ripasso']).pop(), primoQuiz = giorniDi(bl, id, ['quiz', 'simulazione'])[0];
+  ok(ultimoVideo <= primoRip, `video fino al ${ultimoVideo}, ripasso dal ${primoRip}`);
+  ok(ultimoRip <= primoQuiz, `ripasso fino al ${ultimoRip}, quiz dal ${primoQuiz}`);
+  eq(bl.filter(b => b.tipo === 'simulazione' && b.esameId === id).map(b => b.argomentoId).filter((x, i, a) => a.indexOf(x) === i), ['S1', 'S2']);
+  ok(bl.filter(b => b.giorno >= '2027-02-26').every(b => b.tipo === 'finale'), 'ultimi 3 giorni');
+  eq(pianifica(s, OGGI).mancanti, {});
+});
+test('un esame alla volta: esami lontani non si mescolano', () => {
+  const s = seq(stato([{ nome: 'Primo', cfu: 6, data: '2027-01-20' }, { nome: 'Secondo', cfu: 6, data: '2027-04-20' }]));
+  const r = pianifica(s, OGGI);
+  const finePrimo = giorniDi(r.blocchi, s.esami[0].id, ['video', 'ripasso', 'quiz', 'simulazione']).pop();
+  const inizioSecondo = giorniDi(r.blocchi, s.esami[1].id)[0];
+  ok(finePrimo < inizioSecondo, `primo fino al ${finePrimo}, secondo dal ${inizioSecondo}`);
+  eq(r.insieme, {});
+  eq(r.mancanti, {});
+});
+test('esami vicini ma con abbastanza tempo: comunque uno alla volta', () => {
+  const s = seq(stato([{ nome: 'Primo', cfu: 6, data: '2026-12-20' }, { nome: 'Secondo', cfu: 12, data: '2027-01-05' }], { oreGiorno: 8 }));
+  const r = pianifica(s, OGGI);
+  eq(r.insieme, {});
+  eq(r.mancanti, {});
+});
+test('due esami insieme solo se serve: il secondo prende al massimo metà giornata', () => {
+  const s = seq(stato([{ nome: 'Primo', cfu: 6, data: '2026-12-01' }, { nome: 'Secondo', cfu: 6, data: '2026-12-05' }]));
+  const r = pianifica(s, OGGI);
+  ok(r.insieme[s.esami[1].id], 'il secondo parte insieme al primo');
+  const ore = (d, id) => r.blocchi.filter(b => b.giorno === d && b.esameId === id && b.tipo !== 'finale').reduce((a, b) => a + b.ore, 0);
+  const giorni = [...new Set(r.blocchi.filter(b => b.tipo !== 'finale' && b.giorno < '2026-11-28').map(b => b.giorno))];   // prima del ripasso finale del primo
+  ok(giorni.every(d => ore(d, s.esami[0].id) >= ore(d, s.esami[1].id)), 'il primo ha sempre la precedenza');
+  ok(giorni.some(d => ore(d, s.esami[1].id) > 0 && ore(d, s.esami[0].id) > 0), 'giorni con due esami');
+});
+test('un esame alla volta: la lezione è "fatta" quando sono segnati tutti i suoi pezzi', () => {
+  const s = seq(conCatalogo());
+  const ia = s.esami.find(e => e.codice === IA);
+  for (const e of s.esami) e.scelta = 'salta';
+  ia.scelta = ia.appelli[2].id;
+  ripianifica(s, OGGI);
+  const pezzi = s.piano.blocchi.filter(b => b.tipo === 'video' && b.argomentoId === 'L1');
+  ok(pezzi.length >= 1);
+  for (const b of pezzi) segnaFatto(s, b, true, OGGI);
+  ok(ia.lezioni[0].fattoIl, 'lezione 1 fatta');
+  segnaFatto(s, pezzi[0], false, OGGI);
+  eq(ia.lezioni[0].fattoIl, null);
 });
 
 export default risultati;

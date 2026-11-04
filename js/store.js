@@ -3,7 +3,7 @@ import { SEED } from './seed.js';
 import { leggiImport, unisci, arricchisciPegaso } from './importa.js';
 
 const KEY = 'gauni';
-export const IMPOSTAZIONI = { oreGiorno: 4, giorni: [0, 1, 2, 3, 4, 5], pause: [], giorniRipasso: 3 };
+export const IMPOSTAZIONI = { oreGiorno: 4, giorni: [0, 1, 2, 3, 4, 5], pause: [], giorniRipasso: 3, unoAllaVolta: true };
 
 /** Stato nuovo con gli esami di partenza. */
 export function statoIniziale() {

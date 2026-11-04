@@ -174,3 +174,8 @@ dialog#sheet::backdrop { background: rgba(0, 0, 0, .55); }
 #nav a { flex: 1; display: grid; justify-items: center; align-content: center; gap: 3px; color: var(--muted); font-size: 11px; font-weight: 600; }
 #nav a.on { color: var(--accent); }
 #nav svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.fasi { display: grid; gap: 8px; margin: 10px 0 4px; }
+.fasi > div { padding: 8px 10px; border-radius: 12px; background: var(--panel-2); border: 1px solid transparent; }
+.fasi > div.on { border-color: var(--c, var(--accent)); }
+.fasi b { font-size: 13px; }
+.fasi small { color: var(--muted); font-size: 11px; }

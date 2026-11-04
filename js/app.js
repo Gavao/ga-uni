@@ -5,7 +5,7 @@ import { carica, salva, statoIniziale, backup, ripristina } from './store.js';
 import { today, addDays, diffDays, weekday, ddmm, ddmmyyyy, longDate, shortDate, relDays, monthName, GIORNI_BREVI } from './date.js';
 import { leggiImport, unisci, leggiArgomenti, importaPegaso, ISTRUZIONI_CLAUDE, ISTRUZIONI_ARGOMENTI, COLORI, uid } from './importa.js';
 import { REGOLE, lezioniFinale, frequenza } from './pegaso.js';
-import { ripianifica, segnaFatto, oreIndietro, oreTotali, oreFatte, argomentiDi, appelloScelto, capacita, oreNecessarie, lezioniProva, TIPI } from './pianifica.js';
+import { ripianifica, segnaFatto, oreIndietro, oreTotali, oreFatte, argomentiDi, appelloScelto, capacita, oreNecessarie, lezioniProva, fasi, QSEQ, TIPI } from './pianifica.js';
 import { applicaProposta, avvisi, carriera, statoPrenotazione, appelloValido } from './esami.js';
 import { creaIcs } from './ics.js';
 
@@ -75,8 +75,9 @@ function pageOggi() {
     ${need ? riepilogoOre(need) : ''}
     ${indietro >= 0.5 ? `<div class="card behind"><span>⏰ Sei indietro di <b>${ore(indietro)}</b> rispetto al piano.</span><button class="secondary small" data-replan>Ripianifica</button></div>` : ''}
     <h2>Da studiare oggi <small>${tot ? `${ore(fatto)} / ${ore(tot)}` : ''}</small></h2>
-    ${oggiBlocchi.length ? `<div class="tasks">${oggiBlocchi.map(taskHtml).join('')}</div>`
-      : `<div class="empty">${capacita(S.impostazioni, oggi) ? 'Niente in programma oggi 🎉' : 'Oggi è giorno di riposo 😌'}</div>`}
+    ${(() => { const ids = [...new Set(oggiBlocchi.filter(b => b.tipo !== 'finale').map(b => b.esameId))]; return ids.length > 1 && S.impostazioni.unoAllaVolta !== false ? '<p class="note">📌 Oggi due esami insieme: il secondo deve partire prima, altrimenti non ci staresti dentro.</p>' : ''; })()}
+    ${oggiBlocchi.length ? `<div class="tasks">${oggiBlocchi.map(b => taskHtml(b)).join('')}</div>`
+      : `<div class="empty">${capacita(S.impostazioni, oggi) ? (() => { const p = (S.piano?.blocchi ?? []).find(b => b.giorno > oggi); const e = p && esame(p.esameId); return e ? `Oggi libero 🎉 Si riparte ${relDays(oggi, p.giorno)} (${shortDate(p.giorno)}) con ${esc(e.nome)}.` : 'Niente in programma oggi 🎉'; })() : 'Oggi è giorno di riposo 😌'}</div>`}
     ${domani.length ? `<h2>Domani <small>${ore(domani.reduce((a, b) => a + b.ore, 0))}</small></h2><div class="tasks">${domani.map(b => taskHtml(b, true)).join('')}</div>` : ''}
     <h2>Carriera</h2>
     <div class="stats"><div class="stat"><b>${c.cfu}/${c.tot}</b><small>CFU</small></div><div class="stat"><b>${fmtMedia(c.media)}</b><small>media</small></div>
@@ -101,7 +102,7 @@ function taskHtml(b, readonly = false) {
   const e = esame(b.esameId);
   if (!e) return '';
   const [emoji, label] = TIPI[b.tipo] ?? ['•', b.tipo];
-  const cosa = b.tipo === 'studio' || b.tipo === 'ripasso' ? (b.titolo || (b.argomentoId ? argomentiDi(e).find(t => t.id === b.argomentoId)?.titolo : '') || 'argomenti già studiati') : '';
+  const cosa = b.titolo || (b.tipo === 'studio' || b.tipo === 'ripasso' ? (b.argomentoId ? argomentiDi(e).find(t => t.id === b.argomentoId)?.titolo : '') || 'argomenti già studiati' : '');
   const key = b.storico != null ? `s${b.storico}` : `p${b.id}`;
   return `<${readonly ? 'div' : 'button'} class="task ${b.fatto ? 'done' : ''}" style="--c:${e.colore}" ${readonly ? '' : `data-task="${esc(key)}"`}>
     ${readonly ? '' : `<span class="check">${b.fatto ? '✓' : ''}</span>`}
@@ -179,6 +180,7 @@ function pageEsame(id) {
       <label class="field"><span>Ore per CFU (di solito 25)</span><input type="number" min="5" max="40" step="1" value="${e.oreCfu}" data-ecfg="oreCfu|${e.id}"></label>
       <label class="field"><span>Già studiato / seguito: <b>${e.giaStudiato}%</b> (le ore previste scendono)</span><input type="range" min="0" max="90" step="10" value="${e.giaStudiato}" data-ecfg="giaStudiato|${e.id}"></label>
       <p class="note">Ore previste: ${e.cfu} CFU × ${e.oreCfu} h${e.giaStudiato ? ` − ${e.giaStudiato}%` : ''} = <b>${ore(H)}</b>. Studio ${ore(f.studio)}, ripassi ${ore(f.ripasso)}, simulazioni ${ore(f.simulazione)}, ripasso finale ${ore(f.finale)}.</p>
+      ${faseHtml(e)}
     </div>
 
     <h2>Argomenti <small>${args.filter(t => t.fattoIl).length}/${args.length} fatti</small></h2>
@@ -197,6 +199,19 @@ function pageEsame(id) {
         <button class="primary" data-pass="${e.id}">Salva il voto</button></div>`}
     <button class="link danger" data-delexam="${e.id}">Elimina questo esame</button>`;
   void a;
+}
+
+/** Le tre fasi (metodo "un esame alla volta"): videolezioni, ripasso di tutto, quiz e simulazioni. */
+function faseHtml(e) {
+  if (S.impostazioni.unoAllaVolta === false) return '';
+  const f = fasi(S, e);
+  const nomi = { 1: e.lezioni ? '📺 Videolezioni' : '📖 Primo studio', 2: '🔁 Ripasso di tutto', 3: '🧠 Quiz e simulazioni' };
+  const att = [1, 2, 3].find(k => f[k].fatte < f[k].tot - 0.25) ?? 3;
+  const ins = S.piano?.insieme?.[e.id];
+  return `<div class="fasi">${[1, 2, 3].map(k => `<div class="${k === att ? 'on' : ''}"><b>${nomi[k]}</b>
+      <div class="bar"><i style="width:${Math.min(100, (f[k].fatte / Math.max(0.5, f[k].tot)) * 100)}%"></i></div><small>${ore(f[k].fatte)} di ${ore(f[k].tot)}</small></div>`).join('')}</div>
+    <p class="note">🎯 Ultimi ${S.impostazioni.giorniRipasso} giorni: solo ripasso generale e quiz veloci (${ore(oreTotali(e) * QSEQ.finale)} circa).</p>
+    ${ins ? `<p class="note">⚠️ Si prepara insieme all'esame precedente dal ${ddmm(ins)}: aspettando non ci staresti dentro.</p>` : ''}`;
 }
 
 /** Esame Pegaso: frequenza, com'è fatta la prova, ore per lezione e l'elenco delle videolezioni. */
@@ -231,10 +246,11 @@ function sezionePegaso(e, H, f, mancanti) {
       ${mancanti ? `<p class="note" style="color:var(--red)">⚠️ Con il ritmo attuale mancano circa ${mancanti} h prima dell'esame.</p>` : ''}
       <label class="field"><span>Ore per lezione (video + dispensa + test di fine lezione)</span><input type="number" min="0.5" max="6" step="0.5" value="${e.oreLezione ?? 1.5}" data-ecfg="oreLezione|${e.id}"></label>
       <label class="field"><span>Già studiato / ripassato altrove: <b>${e.giaStudiato}%</b></span><input type="range" min="0" max="90" step="10" value="${e.giaStudiato}" data-ecfg="giaStudiato|${e.id}"></label>
-      <p class="note">${prova.length} lezioni per ${intermedia ? 'la prova intermedia' : 'questa prova'} × ${ore(e.oreLezione ?? 1.5)}, più ripassi, test e ripasso finale = <b>${ore(H)}</b>.</p>
+      <p class="note">${prova.length} lezioni per ${intermedia ? 'la prova intermedia' : 'questa prova'} × ${ore(e.oreLezione ?? 1.5)} = <b>${ore(H)}</b> in tutto, compresi ripasso, quiz e ripasso finale.</p>
+      ${faseHtml(e)}
     </div>
     <h2>Lezioni <small>${fatte}/${n} fatte</small></h2>
-    <p class="note">Tocca ✓ quando hai finito una lezione (video, dispensa e test): partono i ripassi. La % è quanto avevi già visto in piattaforma. Tocca la difficoltà per cambiarla.</p>
+    <p class="note">Tocca ✓ quando hai finito una lezione (video, Obiettivi e test). La % è quanto avevi già visto in piattaforma. Tocca la difficoltà per cambiarla: le lezioni difficili hanno più tempo.</p>
     <div class="list">${e.lezioni.map((l, i) => `${i === n - k ? `<p class="note" style="margin-top:12px">⬇️ Ultime ${k} lezioni: programma della prova finale</p>` : ''}
       <div class="topic ${l.fattoIl ? 'done' : ''}" style="--c:${e.colore}${intermedia && i >= n - k ? ';opacity:.6' : ''}">
       <button class="tick ${l.fattoIl ? 'on' : ''}" data-tdone="${e.id}|L${l.n}">${l.fattoIl ? '✓' : ''}</button><span class="t">${l.n}. ${esc(l.titolo)}${!l.fattoIl && l.visto ? ` <small class="note">(${l.visto}%)</small>` : ''}</span>
@@ -304,6 +320,8 @@ function pageAltro() {
   view.innerHTML = `<header class="top"><span class="brand">🎓</span><h1>Altro</h1></header>
     <h2>Ritmo di studio</h2>
     <div class="card">
+      <div class="field"><span>Metodo</span><div class="seg"><button class="${imp.unoAllaVolta !== false ? 'on' : ''}" data-metodo="seq">Un esame alla volta</button><button class="${imp.unoAllaVolta === false ? 'on' : ''}" data-metodo="misto">Più esami insieme</button></div></div>
+      <p class="note">${imp.unoAllaVolta !== false ? 'Per ogni esame: prima tutte le videolezioni, poi il ripasso di tutto, poi quiz e simulazioni; negli ultimi giorni solo ripasso generale. Il successivo parte quando il primo è finito, o insieme solo se altrimenti non ci staresti dentro.' : 'Più esami in parallelo, il più vicino ha la precedenza, con ripassi dopo 1, 3, 7 e 14 giorni.'}</p>
       <div class="field"><span>Ore di studio al giorno</span><div class="stepper"><button class="icon" data-imp="oreGiorno|-0.5">−</button><b>${ore(imp.oreGiorno)}</b><button class="icon" data-imp="oreGiorno|0.5">+</button></div></div>
       <div class="field"><span>Giorni di studio</span><div class="days">${GIORNI_BREVI.map((g, i) => `<button class="${imp.giorni.includes(i) ? 'on' : ''}" data-wday="${i}">${g}</button>`).join('')}</div></div>
       <div class="field"><span>Giorni di solo ripasso prima di ogni esame</span><div class="stepper"><button class="icon" data-imp="giorniRipasso|-1">−</button><b>${imp.giorniRipasso}</b><button class="icon" data-imp="giorniRipasso|1">+</button></div></div>
@@ -530,6 +548,7 @@ document.addEventListener('click', async e => {
     S.impostazioni[k] = Math.max(lim[0], Math.min(lim[1], S.impostazioni[k] + +d));
     aggiorna(); return;
   }
+  if ((el = on('[data-metodo]'))) { S.impostazioni.unoAllaVolta = el.dataset.metodo === 'seq'; aggiorna('Metodo cambiato: piano rifatto.'); return; }
   if ((el = on('[data-wday]'))) {
     const i = +el.dataset.wday, g = S.impostazioni.giorni;
     S.impostazioni.giorni = g.includes(i) ? g.filter(x => x !== i) : [...g, i].sort();
