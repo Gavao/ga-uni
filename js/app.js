@@ -11,6 +11,7 @@ import { creaIcs } from './ics.js';
 const $ = s => document.querySelector(s);
 const view = $('#view');
 const sheet = $('#sheet');
+const native = window.Android;   // guscio Android (APK): salva e condivide i file al posto del browser
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const ore = h => `${String(Math.round(h * 10) / 10).replace('.', ',')} h`;
 const fmtMedia = m => (m == null ? '—' : m.toFixed(2).replace('.', ','));
@@ -61,6 +62,7 @@ function pageOggi() {
   const tot = oggiBlocchi.reduce((a, b) => a + b.ore, 0), fatto = oggiBlocchi.filter(b => b.fatto).reduce((a, b) => a + b.ore, 0);
   const domani = (S.piano?.blocchi ?? []).filter(b => b.giorno === addDays(oggi, 1));
   view.innerHTML = `<header class="top"><span class="brand">🎓</span><h1>GAUNI<small>${esc(longDate(oggi))}</small></h1></header>
+    ${updateBanner()}
     ${next ? (() => {
       const a = appelloScelto(next), d = diffDays(oggi, a.data), f = oreFatte(S, next.id).totale;
       return `<a class="card hero" style="--c:${next.colore}" href="#/esame/${next.id}"><div class="kicker">Prossimo esame</div><h3>${esc(next.nome)}</h3>
@@ -276,7 +278,7 @@ function pageAltro() {
     </div>
     <input type="file" id="restoreFile" accept=".json,application/json,text/plain" hidden>
     <h2>App</h2>
-    <p class="note">GAUNI ${esc(APP_VERSION)}. I dati restano solo su questo telefono: fai un backup ogni tanto.
+    ${updateBanner()}<p class="note">GAUNI ${esc(APP_VERSION)}${native ? ` · app Android ${esc(apkVersion())}` : ''}. I dati restano solo su questo telefono: fai un backup ogni tanto.
       Su iPhone: apri la pagina in Safari → Condividi → "Aggiungi alla schermata Home". Su Android: menu di Chrome → "Installa app".</p>
     <button class="link danger" data-reset>Ricomincia da capo</button>`;
 }
@@ -306,6 +308,7 @@ function render() {
 addEventListener('hashchange', () => { render(); scrollTo(0, 0); });
 
 function scarica(nome, testo, tipo) {
+  if (native?.shareFile) { if (!native.shareFile(nome, tipo, testo)) toast('Salvataggio non riuscito'); return; }
   const url = URL.createObjectURL(new Blob([testo], { type: tipo }));
   const a = Object.assign(document.createElement('a'), { href: url, download: nome });
   document.body.append(a);
@@ -314,15 +317,45 @@ function scarica(nome, testo, tipo) {
   setTimeout(() => URL.revokeObjectURL(url), 5000);
 }
 async function copia(testo) {
+  if (native?.copyText?.(testo)) { toast('Copiato! Incollalo in Claude e aggiungi sotto il testo.'); return; }
   try { await navigator.clipboard.writeText(testo); toast('Copiato! Incollalo in Claude e aggiungi sotto il testo.'); }
   catch { sheet.innerHTML = `<div class="sheet-head"><h2>Copia questo testo</h2><button class="icon" data-close>✕</button></div><textarea readonly style="min-height:300px">${esc(testo)}</textarea>`; sheet.showModal(); }
 }
+
+// ---------------------------------------------------------------- aggiornamenti dell'APK
+// Il contenuto dell'app si aggiorna da solo da GitHub Pages; l'APK (il guscio) solo con una nuova release.
+const RELEASES = 'https://api.github.com/repos/Gavao/ga-uni/releases/latest';
+let apkUpdate = null;
+const apkVersion = () => native?.appVersion?.() ?? '';
+const newer = (a, b) => {
+  const pa = a.split('.').map(Number), pb = b.split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) if ((pa[i] ?? 0) !== (pb[i] ?? 0)) return (pa[i] ?? 0) > (pb[i] ?? 0);
+  return false;
+};
+async function checkApkUpdate() {
+  if (!native) return;
+  try {
+    const rel = await (await fetch(RELEASES)).json();
+    const version = rel.tag_name?.replace(/^v/, '');
+    const asset = rel.assets?.find(a => a.name.endsWith('.apk'));
+    apkUpdate = version && asset && newer(version, apkVersion()) ? { version, url: asset.browser_download_url } : null;
+  } catch { /* offline */ }
+}
+const updateBanner = () => (apkUpdate ? `<button class="secondary wide" data-update>⬆️ È disponibile la versione ${esc(apkUpdate.version)} dell'app: tocca per aggiornare</button>` : '');
+
+/** Tasto Indietro di Android: chiude la finestra aperta o torna indietro di una pagina. */
+window.appBack = () => {
+  if (sheet.open) { sheet.close(); return true; }
+  if (location.hash && location.hash !== '#/') { history.back(); return true; }
+  return false;
+};
 
 // ---------------------------------------------------------------- tocchi
 document.addEventListener('click', async e => {
   const t = e.target;
   const on = sel => t.closest(sel);
   if (on('[data-close]')) { sheet.close(); return; }
+  if (on('[data-update]')) { native.installUpdate(apkUpdate.url); toast('Download in corso: al termine si apre l\'installazione.'); return; }
   let el;
   if ((el = on('[data-task]'))) {
     const k = el.dataset.task;
@@ -448,8 +481,11 @@ document.addEventListener('click', async e => {
     anteprima = null;
     aggiorna(`Import fatto: ${r.aggiunti} esami nuovi, ${r.aggiornati} aggiornati.`); return;
   }
-  if (on('[data-ics]')) { scarica('esami-gauni.ics', creaIcs(S), 'text/calendar'); toast('File .ics scaricato: aprilo per aggiungere gli eventi al calendario.'); return; }
-  if (on('[data-backup]')) { scarica(`gauni-backup-${oggi}.json`, backup(S), 'application/json'); toast('Backup salvato nei download.'); return; }
+  if (on('[data-ics]')) {
+    if (native?.openFile) { native.openFile('esami-gauni.ics', 'text/calendar', creaIcs(S)); return; }
+    scarica('esami-gauni.ics', creaIcs(S), 'text/calendar'); toast('File .ics scaricato: aprilo per aggiungere gli eventi al calendario.'); return;
+  }
+  if (on('[data-backup]')) { scarica(`gauni-backup-${oggi}.json`, backup(S), 'application/json'); if (!native) toast('Backup salvato nei download.'); return; }
   if (on('[data-restore]')) { $('#restoreFile').click(); return; }
   if (on('[data-reset]')) {
     if (!confirm('Ricominciare da capo? Si perdono argomenti, voti e piano (fai prima un backup).')) return;
@@ -493,6 +529,7 @@ document.addEventListener('visibilitychange', () => {
   checkWebUpdate();
 });
 render();
+checkApkUpdate().then(() => { if (apkUpdate) render(); });
 checkWebUpdate();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 if (location.hostname === 'localhost') window.__u = { get S() { return S; }, render };
