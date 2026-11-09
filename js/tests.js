@@ -1,7 +1,7 @@
 // Prove automatiche di import, scelta degli appelli, piano di studio ed export .ics. Si aprono da tests.html.
 import { leggiImport, unisci, leggiArgomenti, nuovoEsame, importaPegaso } from './importa.js';
 import { proponiAppelli, avvisi, carriera, statoPrenotazione } from './esami.js';
-import { pianifica, ripianifica, segnaFatto, capacita, oreTotali, QUOTE, appelloScelto, lezioniProva, argomentiDi } from './pianifica.js';
+import { pianifica, ripianifica, segnaFatto, capacita, oreTotali, QUOTE, appelloScelto, lezioniProva, argomentiDi, compiti } from './pianifica.js';
 import { lezioniFinale, frequenza, espandi } from './pegaso.js';
 import { creaIcs } from './ics.js';
 import { statoIniziale } from './store.js';
@@ -326,7 +326,8 @@ test('un esame alla volta: prima le videolezioni, poi ripasso e quiz alternati, 
   const s = seq(stato([{ cfu: 6, data: '2027-03-01', argomenti: 'A\nB\nC\nD\nE\nF\nG\nH\nI\nJ\nK\nL' }]));
   const bl = pianifica(s, OGGI).blocchi, id = s.esami[0].id;
   const ultimoVideo = giorniDi(bl, id, ['video']).pop(), primoRip = giorniDi(bl, id, ['ripasso'])[0];
-  const primoQuiz = giorniDi(bl, id, ['quiz'])[0], ultimoRip = giorniDi(bl, id, ['ripasso']).pop();
+  const primoGiro = bl.filter(b => !String(b.argomentoId).includes('+'));   // senza il "secondo giro" dopo le simulazioni
+  const primoQuiz = giorniDi(bl, id, ['quiz'])[0], ultimoRip = giorniDi(primoGiro, id, ['ripasso']).pop();
   ok(ultimoVideo <= primoRip, `video fino al ${ultimoVideo}, ripasso dal ${primoRip}`);
   ok(primoQuiz < ultimoRip, `quiz alternati al ripasso: primo quiz ${primoQuiz}, ultimo ripasso ${ultimoRip}`);
   ok(ultimoRip <= giorniDi(bl, id, ['simulazione'])[0], 'simulazioni dopo il ripasso');
@@ -347,6 +348,22 @@ test('un esame alla volta: con poco lavoro rimasto si studia comunque ogni giorn
   for (let d = OGGI; d < '2026-12-01'; d = addDays(d, 1)) ok(lavoro.has(d), `giorno vuoto: ${d}`);
   ok(bl.some(b => b.titolo.includes('secondo giro')), 'secondo giro');
   ok(bl.filter(b => b.tipo !== 'finale').every(b => b.ore <= 2), 'ritmo leggero');
+});
+test('ripasso a piccoli gruppi (max 2 lezioni, mezz\'ora a lezione) e quiz ogni 4 lezioni, anche con poche ore previste', () => {
+  const s = seq(conCatalogo());
+  const ia = s.esami.find(e => e.codice === IA);
+  for (const e of s.esami) e.scelta = 'salta';
+  ia.scelta = ia.appelli[2].id;
+  ia.giaStudiato = 90;
+  for (const l of ia.lezioni) { l.visto = 100; l.fattoIl = OGGI; }
+  const c = compiti(s, ia);
+  const lez = k => { const m = /^[RQ](\d+)-(\d+)$/.exec(k); return +m[2] - +m[1] + 1; };
+  const rip = c.filter(x => x.tipo === 'ripasso'), qz = c.filter(x => x.tipo === 'quiz');
+  ok(rip.every(x => lez(x.key) <= 2), 'al massimo 2 lezioni per ripasso');
+  ok(rip.every(x => x.tot >= lez(x.key)), 'almeno mezz\'ora a lezione');
+  ok(qz.every(x => lez(x.key) <= 4), 'quiz su al massimo 4 lezioni');
+  const ordine = c.filter(x => x.fase === 2).map(x => x.tipo[0]).join('');
+  ok(/^(rrq)+r?r?q?$/.test(ordine), `ripasso, ripasso, quiz…: ${ordine}`);
 });
 test('un esame alla volta: esami lontani non si mescolano', () => {
   const s = seq(stato([{ nome: 'Primo', cfu: 6, data: '2027-01-20' }, { nome: 'Secondo', cfu: 6, data: '2027-04-20' }]));

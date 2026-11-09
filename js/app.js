@@ -67,11 +67,13 @@ function pageOggi() {
     ${next ? (() => {
       const a = appelloScelto(next), d = diffDays(oggi, a.data), fo = oreFatte(S, next.id);
       // Con il metodo a fasi contano anche le videolezioni già viste sulla Pegaso
-      const f = S.impostazioni.unoAllaVolta !== false ? Object.values(fasi(S, next)).reduce((s, x) => s + x.fatte, 0) + fo.finale : fo.totale;
+      const seq = S.impostazioni.unoAllaVolta !== false, fs = Object.values(fasi(S, next));
+      const f = seq ? fs.reduce((s, x) => s + x.fatte, 0) + fo.finale : fo.totale;
+      const T = seq ? fs.reduce((s, x) => s + x.tot, 0) + oreTotali(next) * QSEQ.finale : oreTotali(next);
       return `<a class="card hero" style="--c:${next.colore}" href="#/esame/${next.id}"><div class="kicker">Prossimo esame</div><h3>${esc(next.nome)}</h3>
         <div class="note">${esc(longDate(a.data))} alle ${a.ora} · ${next.cfu} CFU</div>
         <div class="count">${d === 0 ? 'Oggi!' : d === 1 ? 'Domani' : `${d} <small>giorni</small>`}</div>
-        <div class="bar"><i style="width:${Math.min(100, (f / Math.max(1, oreTotali(next))) * 100)}%"></i></div><small class="note">${ore(f)} studiate su ${ore(oreTotali(next))} previste</small></a>`;
+        <div class="bar"><i style="width:${Math.min(100, (f / Math.max(1, T)) * 100)}%"></i></div><small class="note">${ore(f)} studiate su ${ore(T)} previste</small></a>`;
     })() : '<div class="card empty">Nessun esame in programma: scegli gli appelli in Esami.</div>'}
     ${av.length ? `<div class="alerts">${av.slice(0, 5).map(alertHtml).join('')}${av.length > 5 ? `<a class="note" href="#/esami">Altri ${av.length - 5} avvisi in Esami ›</a>` : ''}</div>` : ''}
     ${need ? riepilogoOre(need) : ''}

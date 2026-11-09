@@ -300,7 +300,6 @@ export function oreNecessarie(state, oggi) {
 // ---------------------------------------------------------------- un esame alla volta
 /** Metodo "un esame alla volta": quote delle ore di ogni esame per fase. */
 export const QSEQ = { video: 0.35, ripasso: 0.35, quiz: 0.18, finale: 0.12 };
-const BLOCCO = 3;   // mezz'ore: ripassi e quiz a blocchi di circa un'ora e mezza
 
 /**
  * Cosa resta da fare per un esame, in ordine: 1) videolezioni (o primo studio degli argomenti),
@@ -316,7 +315,7 @@ export function compiti(state, e) {
   const pegaso = !!e.lezioni?.length;
   const somma = args.reduce((a, t) => a + PESO[t.difficolta ?? 'medio'], 0) || 1;
   const w = t => PESO[t.difficolta ?? 'medio'] / somma;
-  const nome = (a, b) => (pegaso ? `lezioni ${args[a].lezione.n}-${args[b].lezione.n}` : a === b ? args[a].titolo : `${args[a].titolo} … ${args[b].titolo}`);
+  const nome = (a, b) => (pegaso ? (a === b ? `lezione ${args[a].lezione.n}` : `lezioni ${args[a].lezione.n}-${args[b].lezione.n}`) : a === b ? args[a].titolo : `${args[a].titolo} … ${args[b].titolo}`);
   const maiusc = t => t.charAt(0).toUpperCase() + t.slice(1);
   const out = [];
   // 1) Videolezioni / primo studio, nell'ordine del programma
@@ -325,27 +324,34 @@ export function compiti(state, e) {
     const u = t.fattoIl ? 0 : Math.max(1, Math.round(tot * (1 - (t.visto ?? 0) / 100)) - done('video', t.id) - done('studio', t.id));
     out.push({ fase: 1, tipo: 'video', key: t.id, titolo: pegaso ? `${t.titolo} (video, Obiettivi e test)` : t.titolo, u, tot });
   }
-  // 2) Ripasso e quiz alternati: si ripassa un gruppo di lezioni e subito dopo si fanno i quiz su quelle lezioni
-  const rip = toU(H * QSEQ.ripasso);
-  const g = Math.max(1, Math.round((BLOCCO * n) / Math.max(1, rip)));
-  const ripassi = [];
-  for (let a = 0; a < n; a += g) {
-    const b = Math.min(n, a + g) - 1;
-    const tot = Math.max(1, Math.round((rip * (b - a + 1)) / n));
-    ripassi.push({ da: a, c: { fase: 2, tipo: 'ripasso', key: `R${a + 1}-${b + 1}`, titolo: maiusc(nome(a, b)), u: Math.max(0, tot - done('ripasso', `R${a + 1}-${b + 1}`)), tot } });
-  }
+  // 2) Ripasso e quiz alternati, a piccoli gruppi: si ripassano al massimo 2 lezioni per volta (almeno mezz'ora
+  //    a lezione, qualunque sia il totale delle ore) e ogni 2 gruppi si fanno i quiz sulle lezioni appena ripassate.
+  const rip = Math.max(toU(H * QSEQ.ripasso), n);
+  const g = Math.min(2, Math.max(1, Math.round((2 * n) / rip)));   // blocchi di circa un'ora
+  const gruppi = [];
+  for (let a = 0; a < n; a += g) gruppi.push([a, Math.min(n, a + g) - 1]);
+  const coppie = [];
+  for (let i = 0; i < gruppi.length; i += 2) coppie.push([gruppi[i][0], gruppi[Math.min(gruppi.length, i + 2) - 1][1]]);
   const quiz = toU(H * QSEQ.quiz);
-  const sim = Math.min(2, Math.max(1, Math.round(quiz / 6)));   // un'ora a simulazione, se c'è tempo
-  const restoQ = Math.max(0, quiz - 2 * sim);
-  const k = Math.max(1, Math.round(restoQ / BLOCCO));
-  for (let i = 0; i < k && restoQ > 0; i++) {
-    const a = Math.floor((i * n) / k), b = Math.floor(((i + 1) * n) / k) - 1;
-    if (b < a) continue;
-    while (ripassi.length && ripassi[0].da <= b) out.push(ripassi.shift().c);   // prima il ripasso di queste lezioni
-    const tot = Math.max(1, Math.round(restoQ / k));
-    out.push({ fase: 2, tipo: 'quiz', key: `Q${a + 1}-${b + 1}`, titolo: `${maiusc(nome(a, b))}${pegaso ? ' (test di autovalutazione)' : ''}`, u: Math.max(0, tot - done('quiz', `Q${a + 1}-${b + 1}`)), tot });
-  }
-  for (const r of ripassi) out.push(r.c);
+  const sim = 2;   // un'ora a simulazione: la prova e la correzione degli errori
+  const restoQ = Math.max(coppie.length, quiz - 2 * sim);       // almeno mezz'ora di quiz ogni 4 lezioni circa
+  // Ore già segnate su gruppi di una versione precedente del piano (chiavi diverse): valgono per i primi gruppi
+  const chiaviNuove = new Set([...gruppi.map(([a, b]) => `ripasso|R${a + 1}-${b + 1}`), ...coppie.map(([a, b]) => `quiz|Q${a + 1}-${b + 1}`)]);
+  const vecchie = tipo => toU(Object.entries(fatte.chiavi).filter(([k]) => k.startsWith(`${tipo}|`) && /\|[RQ]\d+-\d+$/.test(k) && !chiaviNuove.has(k)).reduce((s, [, h]) => s + h, 0));
+  const avanzo = { ripasso: vecchie('ripasso'), quiz: vecchie('quiz') };
+  const compito = (tipo, key, titolo, tot) => {
+    let u = Math.max(0, tot - done(tipo, key));
+    const usa = Math.min(u, avanzo[tipo]);
+    u -= usa; avanzo[tipo] -= usa;
+    return { fase: 2, tipo, key, titolo, u, tot };
+  };
+  coppie.forEach(([qa, qb], i) => {
+    for (const [a, b] of gruppi.slice(i * 2, i * 2 + 2)) {
+      const tot = Math.max(1, Math.round((rip * (b - a + 1)) / n));
+      out.push(compito('ripasso', `R${a + 1}-${b + 1}`, maiusc(nome(a, b)), tot));
+    }
+    out.push(compito('quiz', `Q${qa + 1}-${qb + 1}`, `${maiusc(nome(qa, qb))}${pegaso ? ' (test di fine lezione)' : ''}`, Math.max(1, Math.round(restoQ / coppie.length))));
+  });
   // 3) Due simulazioni complete, prima degli ultimi giorni
   for (const s of [1, 2]) {
     out.push({ fase: 3, tipo: 'simulazione', key: `S${s}`, titolo: pegaso ? `Simulazione ${s}: 24 domande in 35 minuti, su tutto il programma` : `Simulazione d'esame ${s}`, u: Math.max(0, sim - done('simulazione', `S${s}`)), tot: sim });
@@ -428,7 +434,7 @@ function pianificaSequenza(state, oggi) {
     const x = esami.find(y => y.data > d && d < y.inizioFinale && i >= y.inizio);
     if (!x) return;
     if (x.coda.length) {
-      const fatto = lavora(d, x, 2);
+      const fatto = lavora(d, x, x.coda[0].u <= 3 ? x.coda[0].u : 2);   // un gruppo intero se ci sta
       if (x.credito != null) x.credito = Math.max(0, x.credito - fatto);
       return;
     }
@@ -477,6 +483,12 @@ function pianificaSequenza(state, oggi) {
     if (somma > resto(p)) {
       p.credito = (p.credito ?? 0) + (cap * resto(p)) / somma;
       quotaP = Math.min(quotaP, p.credito >= 2 ? Math.round(p.credito) : 0);
+      // Si chiude ogni gruppo di lezioni nello stesso giorno (al massimo mezz'ora in più o in meno della quota)
+      if (quotaP > 0) {
+        let acc = 0;
+        for (const c of p.coda) { if (acc + c.u > quotaP + 1) break; acc += c.u; }
+        if (acc > 0) quotaP = Math.min(cap - quotaS, acc);
+      }
     }
     const fatto = lavora(d, p, quotaP);
     if (p.credito != null) p.credito = Math.max(0, p.credito - fatto);
