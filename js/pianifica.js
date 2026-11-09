@@ -419,6 +419,26 @@ function pianificaSequenza(state, oggi) {
     else x.inizio = Math.min(x.inizio, idx(conLavoro[n - 1].data) + 1);
     inizi[x.e.id] = addDays(oggi, x.inizio);
   });
+  /**
+   * Nessun giorno di studio vuoto mentre si prepara un esame: almeno un'ora. Prima si porta avanti il lavoro che
+   * resta; se è già tutto fatto, un altro giro di ripasso e quiz alternati sulle stesse lezioni.
+   */
+  const almenoUnOra = (i, d, cap) => {
+    if (cap < 2 || cap < capU[i]) return;   // solo nei giorni rimasti vuoti
+    const x = esami.find(y => y.data > d && d < y.inizioFinale && i >= y.inizio);
+    if (!x) return;
+    if (x.coda.length) {
+      const fatto = lavora(d, x, 2);
+      if (x.credito != null) x.credito = Math.max(0, x.credito - fatto);
+      return;
+    }
+    x.giro ??= compiti(state, x.e).filter(c => c.tipo === 'ripasso' || c.tipo === 'quiz');
+    if (!x.giro.length) return;
+    x.gi ??= 0;
+    const c = x.giro[x.gi % x.giro.length], n = Math.floor(x.gi / x.giro.length) + 2;
+    x.gi++;
+    add(d, x, c.tipo, 2, `${c.key}+${n}`, `${c.titolo} (${n === 2 ? 'secondo' : n === 3 ? 'terzo' : `${n}°`} giro)`);
+  };
   const insieme = {};   // esami preparati insieme al precedente (perché aspettando non ci starebbero): giorno di inizio
   for (let i = 0; i < giorni; i++) {
     const d = addDays(oggi, i);
@@ -428,7 +448,7 @@ function pianificaSequenza(state, oggi) {
     if (riservato[i]) { add(d, riservato[i], 'finale', cap, null, 'Ripasso generale e quiz veloci su tutto il programma'); continue; }
     const aperti = esami.filter(x => x.data > d && d < x.inizioFinale && x.coda.length && i >= x.inizio);
     const [p, s] = aperti;
-    if (!p) continue;
+    if (!p) { almenoUnOra(i, d, cap); continue; }
     // Il secondo esame parte insieme al primo solo se, aspettando che il primo finisca, non farebbe in tempo
     let quotaS = 0;
     if (s) {
@@ -463,6 +483,7 @@ function pianificaSequenza(state, oggi) {
     cap -= fatto;
     if (s && cap > 0) cap -= lavora(d, s, cap);   // a s la sua quota (più quello che avanza se p ha finito)
     for (const x of aperti.slice(2)) if (cap > 0) cap -= lavora(d, x, cap);
+    almenoUnOra(i, d, cap);
   }
   const mancanti = {}, previste = {};
   for (const x of esami) {

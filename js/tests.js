@@ -339,6 +339,15 @@ test('un esame alla volta: prima le videolezioni, poi ripasso e quiz alternati, 
   ok(bl.filter(b => b.giorno >= '2027-02-26').every(b => b.tipo === 'finale'), 'ultimi 3 giorni');
   eq(pianifica(s, OGGI).mancanti, {});
 });
+test('un esame alla volta: con poco lavoro rimasto si studia comunque ogni giorno (secondo giro di ripasso e quiz)', () => {
+  const s = seq(stato([{ cfu: 6, data: '2026-12-04', argomenti: 'A\nB\nC\nD\nE\nF' }]));
+  s.esami[0].giaStudiato = 90;
+  const bl = pianifica(s, OGGI).blocchi, id = s.esami[0].id;
+  const lavoro = new Set(giorniDi(bl, id));
+  for (let d = OGGI; d < '2026-12-01'; d = addDays(d, 1)) ok(lavoro.has(d), `giorno vuoto: ${d}`);
+  ok(bl.some(b => b.titolo.includes('secondo giro')), 'secondo giro');
+  ok(bl.filter(b => b.tipo !== 'finale').every(b => b.ore <= 2), 'ritmo leggero');
+});
 test('un esame alla volta: esami lontani non si mescolano', () => {
   const s = seq(stato([{ nome: 'Primo', cfu: 6, data: '2027-01-20' }, { nome: 'Secondo', cfu: 6, data: '2027-04-20' }]));
   const r = pianifica(s, OGGI);
