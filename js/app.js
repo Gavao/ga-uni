@@ -65,7 +65,9 @@ function pageOggi() {
   view.innerHTML = `<header class="top"><span class="brand">🎓</span><h1>GAUNI<small>${esc(longDate(oggi))}</small></h1></header>
     ${updateBanner()}
     ${next ? (() => {
-      const a = appelloScelto(next), d = diffDays(oggi, a.data), f = oreFatte(S, next.id).totale;
+      const a = appelloScelto(next), d = diffDays(oggi, a.data), fo = oreFatte(S, next.id);
+      // Con il metodo a fasi contano anche le videolezioni già viste sulla Pegaso
+      const f = S.impostazioni.unoAllaVolta !== false ? Object.values(fasi(S, next)).reduce((s, x) => s + x.fatte, 0) + fo.finale : fo.totale;
       return `<a class="card hero" style="--c:${next.colore}" href="#/esame/${next.id}"><div class="kicker">Prossimo esame</div><h3>${esc(next.nome)}</h3>
         <div class="note">${esc(longDate(a.data))} alle ${a.ora} · ${next.cfu} CFU</div>
         <div class="count">${d === 0 ? 'Oggi!' : d === 1 ? 'Domani' : `${d} <small>giorni</small>`}</div>
@@ -205,7 +207,7 @@ function pageEsame(id) {
 function faseHtml(e) {
   if (S.impostazioni.unoAllaVolta === false) return '';
   const f = fasi(S, e);
-  const nomi = { 1: e.lezioni ? '📺 Videolezioni' : '📖 Primo studio', 2: '🔁 Ripasso di tutto', 3: '🧠 Quiz e simulazioni' };
+  const nomi = { 1: e.lezioni ? '📺 Videolezioni' : '📖 Primo studio', 2: '🔁 Ripasso + quiz', 3: '📝 Simulazioni' };
   const att = [1, 2, 3].find(k => f[k].fatte < f[k].tot - 0.25) ?? 3;
   const ins = S.piano?.insieme?.[e.id];
   return `<div class="fasi">${[1, 2, 3].map(k => `<div class="${k === att ? 'on' : ''}"><b>${nomi[k]}</b>
@@ -321,7 +323,7 @@ function pageAltro() {
     <h2>Ritmo di studio</h2>
     <div class="card">
       <div class="field"><span>Metodo</span><div class="seg"><button class="${imp.unoAllaVolta !== false ? 'on' : ''}" data-metodo="seq">Un esame alla volta</button><button class="${imp.unoAllaVolta === false ? 'on' : ''}" data-metodo="misto">Più esami insieme</button></div></div>
-      <p class="note">${imp.unoAllaVolta !== false ? 'Per ogni esame: prima tutte le videolezioni, poi il ripasso di tutto, poi quiz e simulazioni; negli ultimi giorni solo ripasso generale. Il successivo parte quando il primo è finito, o insieme solo se altrimenti non ci staresti dentro.' : 'Più esami in parallelo, il più vicino ha la precedenza, con ripassi dopo 1, 3, 7 e 14 giorni.'}</p>
+      <p class="note">${imp.unoAllaVolta !== false ? 'Per ogni esame: prima tutte le videolezioni, poi ripasso e quiz alternati a gruppi di lezioni con un ritmo regolare fino all\'esame, poi due simulazioni; negli ultimi giorni solo ripasso generale. Il successivo parte quando il primo è finito, o insieme solo se altrimenti non ci staresti dentro.' : 'Più esami in parallelo, il più vicino ha la precedenza, con ripassi dopo 1, 3, 7 e 14 giorni.'}</p>
       <div class="field"><span>Ore di studio al giorno</span><div class="stepper"><button class="icon" data-imp="oreGiorno|-0.5">−</button><b>${ore(imp.oreGiorno)}</b><button class="icon" data-imp="oreGiorno|0.5">+</button></div></div>
       <div class="field"><span>Giorni di studio</span><div class="days">${GIORNI_BREVI.map((g, i) => `<button class="${imp.giorni.includes(i) ? 'on' : ''}" data-wday="${i}">${g}</button>`).join('')}</div></div>
       <div class="field"><span>Giorni di solo ripasso prima di ogni esame</span><div class="stepper"><button class="icon" data-imp="giorniRipasso|-1">−</button><b>${imp.giorniRipasso}</b><button class="icon" data-imp="giorniRipasso|1">+</button></div></div>

@@ -322,13 +322,19 @@ test('Pegaso: avviso e appello escluso se la frequenza non arriva al 70% in temp
 // ---------------------------------------------------------------- un esame alla volta
 const seq = s => { s.impostazioni.unoAllaVolta = true; return s; };
 const giorniDi = (bl, id, tipi) => bl.filter(b => b.esameId === id && (!tipi || tipi.includes(b.tipo))).map(b => b.giorno).sort();
-test('un esame alla volta: prima le videolezioni, poi il ripasso, poi quiz e simulazioni, alla fine il ripasso generale', () => {
-  const s = seq(stato([{ cfu: 6, data: '2027-03-01', argomenti: 'A\nB\nC\nD\nE\nF' }]));
+test('un esame alla volta: prima le videolezioni, poi ripasso e quiz alternati, simulazioni, alla fine il ripasso generale', () => {
+  const s = seq(stato([{ cfu: 6, data: '2027-03-01', argomenti: 'A\nB\nC\nD\nE\nF\nG\nH\nI\nJ\nK\nL' }]));
   const bl = pianifica(s, OGGI).blocchi, id = s.esami[0].id;
   const ultimoVideo = giorniDi(bl, id, ['video']).pop(), primoRip = giorniDi(bl, id, ['ripasso'])[0];
-  const ultimoRip = giorniDi(bl, id, ['ripasso']).pop(), primoQuiz = giorniDi(bl, id, ['quiz', 'simulazione'])[0];
+  const primoQuiz = giorniDi(bl, id, ['quiz'])[0], ultimoRip = giorniDi(bl, id, ['ripasso']).pop();
   ok(ultimoVideo <= primoRip, `video fino al ${ultimoVideo}, ripasso dal ${primoRip}`);
-  ok(ultimoRip <= primoQuiz, `ripasso fino al ${ultimoRip}, quiz dal ${primoQuiz}`);
+  ok(primoQuiz < ultimoRip, `quiz alternati al ripasso: primo quiz ${primoQuiz}, ultimo ripasso ${ultimoRip}`);
+  ok(ultimoRip <= giorniDi(bl, id, ['simulazione'])[0], 'simulazioni dopo il ripasso');
+  // Nessun buco: dalla fine dei video agli ultimi giorni al massimo un giorno di pausa di fila, senza giornate piene
+  const lavoro = new Set(giorniDi(bl, id));
+  let buco = 0;
+  for (let d = ultimoVideo; d < '2027-02-26'; d = addDays(d, 1)) { buco = lavoro.has(d) ? 0 : buco + 1; ok(buco <= 1, `due giorni vuoti di fila: ${d}`); }
+  ok(bl.filter(b => b.giorno > ultimoVideo && b.tipo !== 'finale').every(b => b.ore < 4), 'ritmo leggero dopo i video');
   eq(bl.filter(b => b.tipo === 'simulazione' && b.esameId === id).map(b => b.argomentoId).filter((x, i, a) => a.indexOf(x) === i), ['S1', 'S2']);
   ok(bl.filter(b => b.giorno >= '2027-02-26').every(b => b.tipo === 'finale'), 'ultimi 3 giorni');
   eq(pianifica(s, OGGI).mancanti, {});

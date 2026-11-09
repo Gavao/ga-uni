@@ -317,6 +317,7 @@ export function compiti(state, e) {
   const somma = args.reduce((a, t) => a + PESO[t.difficolta ?? 'medio'], 0) || 1;
   const w = t => PESO[t.difficolta ?? 'medio'] / somma;
   const nome = (a, b) => (pegaso ? `lezioni ${args[a].lezione.n}-${args[b].lezione.n}` : a === b ? args[a].titolo : `${args[a].titolo} … ${args[b].titolo}`);
+  const maiusc = t => t.charAt(0).toUpperCase() + t.slice(1);
   const out = [];
   // 1) Videolezioni / primo studio, nell'ordine del programma
   for (const t of args) {
@@ -324,15 +325,15 @@ export function compiti(state, e) {
     const u = t.fattoIl ? 0 : Math.max(1, Math.round(tot * (1 - (t.visto ?? 0) / 100)) - done('video', t.id) - done('studio', t.id));
     out.push({ fase: 1, tipo: 'video', key: t.id, titolo: pegaso ? `${t.titolo} (video, Obiettivi e test)` : t.titolo, u, tot });
   }
-  // 2) Ripasso di tutto, a gruppi di lezioni (circa un'ora e mezza a blocco)
+  // 2) Ripasso e quiz alternati: si ripassa un gruppo di lezioni e subito dopo si fanno i quiz su quelle lezioni
   const rip = toU(H * QSEQ.ripasso);
   const g = Math.max(1, Math.round((BLOCCO * n) / Math.max(1, rip)));
+  const ripassi = [];
   for (let a = 0; a < n; a += g) {
     const b = Math.min(n, a + g) - 1;
     const tot = Math.max(1, Math.round((rip * (b - a + 1)) / n));
-    out.push({ fase: 2, tipo: 'ripasso', key: `R${a + 1}-${b + 1}`, titolo: `Ripasso ${nome(a, b)}`, u: Math.max(0, tot - done('ripasso', `R${a + 1}-${b + 1}`)), tot });
+    ripassi.push({ da: a, c: { fase: 2, tipo: 'ripasso', key: `R${a + 1}-${b + 1}`, titolo: maiusc(nome(a, b)), u: Math.max(0, tot - done('ripasso', `R${a + 1}-${b + 1}`)), tot } });
   }
-  // 3) Quiz di allenamento a gruppi, poi due simulazioni complete
   const quiz = toU(H * QSEQ.quiz);
   const sim = Math.min(2, Math.max(1, Math.round(quiz / 6)));   // un'ora a simulazione, se c'è tempo
   const restoQ = Math.max(0, quiz - 2 * sim);
@@ -340,9 +341,12 @@ export function compiti(state, e) {
   for (let i = 0; i < k && restoQ > 0; i++) {
     const a = Math.floor((i * n) / k), b = Math.floor(((i + 1) * n) / k) - 1;
     if (b < a) continue;
+    while (ripassi.length && ripassi[0].da <= b) out.push(ripassi.shift().c);   // prima il ripasso di queste lezioni
     const tot = Math.max(1, Math.round(restoQ / k));
-    out.push({ fase: 3, tipo: 'quiz', key: `Q${a + 1}-${b + 1}`, titolo: `Quiz su ${nome(a, b)}${pegaso ? ' (test di autovalutazione)' : ''}`, u: Math.max(0, tot - done('quiz', `Q${a + 1}-${b + 1}`)), tot });
+    out.push({ fase: 2, tipo: 'quiz', key: `Q${a + 1}-${b + 1}`, titolo: `${maiusc(nome(a, b))}${pegaso ? ' (test di autovalutazione)' : ''}`, u: Math.max(0, tot - done('quiz', `Q${a + 1}-${b + 1}`)), tot });
   }
+  for (const r of ripassi) out.push(r.c);
+  // 3) Due simulazioni complete, prima degli ultimi giorni
   for (const s of [1, 2]) {
     out.push({ fase: 3, tipo: 'simulazione', key: `S${s}`, titolo: pegaso ? `Simulazione ${s}: 24 domande in 35 minuti, su tutto il programma` : `Simulazione d'esame ${s}`, u: Math.max(0, sim - done('simulazione', `S${s}`)), tot: sim });
   }
@@ -399,8 +403,8 @@ function pianificaSequenza(state, oggi) {
     }
     return used;
   };
-  // Quando cominciare ogni esame: il più tardi possibile (dall'ultimo esame all'indietro, uno alla volta), meno un
-  // margine di sicurezza. Così si studia a ridosso dell'esame e non mesi prima.
+  // Quando cominciare ogni esame: il giorno dopo l'esame precedente (il primo subito), così non restano settimane
+  // vuote; prima solo se aspettando non ci starebbe (il più tardi possibile all'indietro, meno un margine).
   const libere = Array.from({ length: giorni }, (_, i) => libera(i));
   const inizi = {};
   for (const x of [...esami].reverse()) {
@@ -408,8 +412,13 @@ function pianificaSequenza(state, oggi) {
     for (; k >= 0 && need > 0; k--) { const g = Math.min(libere[k], need); libere[k] -= g; need -= g; }
     const tardi = Math.max(0, k + 1);
     x.inizio = Math.max(0, tardi - Math.max(5, Math.round((idx(x.inizioFinale) - tardi) * 0.25)));
-    inizi[x.e.id] = addDays(oggi, x.inizio);
   }
+  const conLavoro = esami.filter(x => x.coda.length);
+  conLavoro.forEach((x, n) => {
+    if (n === 0) x.inizio = 0;
+    else x.inizio = Math.min(x.inizio, idx(conLavoro[n - 1].data) + 1);
+    inizi[x.e.id] = addDays(oggi, x.inizio);
+  });
   const insieme = {};   // esami preparati insieme al precedente (perché aspettando non ci starebbero): giorno di inizio
   for (let i = 0; i < giorni; i++) {
     const d = addDays(oggi, i);
@@ -436,7 +445,22 @@ function pianificaSequenza(state, oggi) {
         insieme[s.e.id] ??= d;
       }
     }
-    cap -= lavora(d, p, cap - quotaS);
+    // Il lavoro si spalma in modo regolare fino agli ultimi giorni (o fino a quando deve partire il prossimo esame):
+    // niente giornate piene seguite da settimane vuote. Quota del giorno in proporzione alle ore libere che restano;
+    // se è meno di un'ora si accumula, così le sedute durano almeno un'ora.
+    let quotaP = cap - quotaS;
+    const dopo = esami[esami.indexOf(p) + 1];
+    let fine = idx(p.inizioFinale);
+    if (dopo && dopo.inizio > i) fine = Math.min(fine, dopo.inizio);
+    let somma = 0;
+    for (let k = i; k < fine; k++) somma += libera(k);
+    if (somma > resto(p)) {
+      p.credito = (p.credito ?? 0) + (cap * resto(p)) / somma;
+      quotaP = Math.min(quotaP, p.credito >= 2 ? Math.round(p.credito) : 0);
+    }
+    const fatto = lavora(d, p, quotaP);
+    if (p.credito != null) p.credito = Math.max(0, p.credito - fatto);
+    cap -= fatto;
     if (s && cap > 0) cap -= lavora(d, s, cap);   // a s la sua quota (più quello che avanza se p ha finito)
     for (const x of aperti.slice(2)) if (cap > 0) cap -= lavora(d, x, cap);
   }
