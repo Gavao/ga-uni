@@ -15,7 +15,12 @@ export function statoIniziale() {
 export function carica() {
   try {
     const s = JSON.parse(localStorage.getItem(KEY) ?? 'null');
-    if (s?.versione) return migra(s);
+    if (s?.versione) {
+      const vecchio = !!s.pegaso?.schede;
+      migra(s);
+      if (vecchio) salva(s);   // libera subito lo spazio delle schede non più usate
+      return s;
+    }
   } catch { /* dati rovinati: si riparte */ }
   return null;
 }
@@ -25,6 +30,7 @@ export function salva(state) {
 function migra(s) {
   s.impostazioni = { ...IMPOSTAZIONI, ...s.impostazioni };
   s.fatti ??= [];
+  if (s.pegaso) delete s.pegaso.schede;   // schede di ripasso di una versione precedente: non più usate
   for (const e of s.esami) { e.argomenti ??= []; e.oreCfu ??= 25; e.giaStudiato ??= 0; }
   arricchisciPegaso(s);   // lezioni Pegaso e piano di studi completo, anche sulle partite già iniziate
   return s;

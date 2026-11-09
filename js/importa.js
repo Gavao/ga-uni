@@ -162,13 +162,7 @@ export function importaPegaso(state, dati, oggi) {
     altri: dati.altri ?? state.pegaso?.altri ?? [],
     oreLezione: dati.oreLezione ?? state.pegaso?.oreLezione,
     letto: dati.letto ?? oggi,
-    schede: state.pegaso?.schede ?? {},
   };
-  // Schede di ripasso (concetti chiave, domande, quiz) per lezione: si aggiungono a quelle già caricate
-  for (const [cod, lez] of Object.entries(dati.schede ?? {})) {
-    const k = cod.toUpperCase();
-    state.pegaso.schede[k] = { ...state.pegaso.schede[k], ...lez };
-  }
   for (const x of dati.esiti ?? []) {
     let e = state.esami.find(y => norm(y.nome) === norm(x.nome));
     if (!e) { e = { ...nuovoEsame({ nome: x.nome, cfu: x.cfu, appelli: [] }, COLORI[state.esami.length % COLORI.length]), anno: x.anno }; state.esami.push(e); }

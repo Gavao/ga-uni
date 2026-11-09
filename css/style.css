@@ -179,23 +179,3 @@ dialog#sheet::backdrop { background: rgba(0, 0, 0, .55); }
 .fasi > div.on { border-color: var(--c, var(--accent)); }
 .fasi b { font-size: 13px; }
 .fasi small { color: var(--muted); font-size: 11px; }
-
-/* Ripasso guidato */
-.apri { display: block; margin: -2px 0 4px 18px; padding: 8px 12px; border-radius: 0 0 12px 12px; background: color-mix(in srgb, var(--c, var(--accent)) 18%, var(--panel)); color: var(--text); font-weight: 700; font-size: 14px; }
-.card.studio h3 { margin: 0 0 6px; font-size: 16px; }
-.punti { margin: 0 0 10px; padding-left: 20px; }
-.punti li { margin: 4px 0; }
-.flash { background: var(--panel-2); border-radius: 12px; padding: 10px 12px; margin: 6px 0; }
-.flash summary { font-weight: 600; cursor: pointer; }
-.flash[open] summary { margin-bottom: 6px; }
-.flash p { margin: 0; color: var(--green); }
-.card.domanda b { display: block; margin: 4px 0 8px; }
-.opz { display: grid; gap: 6px; }
-.opz button { text-align: left; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel-2); }
-.opz button.scelta { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 25%, var(--panel-2)); }
-.opz button.giusta { border-color: var(--green); background: color-mix(in srgb, var(--green) 25%, var(--panel-2)); }
-.opz button.sbagliata { border-color: var(--red); background: color-mix(in srgb, var(--red) 25%, var(--panel-2)); }
-.opz button:disabled { color: var(--text); opacity: 1; }
-.card.timer { position: sticky; top: 8px; z-index: 2; display: flex; justify-content: space-between; align-items: center; gap: 10px; }
-.card.timer b { font-size: 22px; }
-.card.timer small { color: var(--muted); font-size: 12px; text-align: right; }
