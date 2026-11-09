@@ -4,6 +4,7 @@ import { proponiAppelli, avvisi, carriera, statoPrenotazione } from './esami.js'
 import { pianifica, ripianifica, segnaFatto, capacita, oreTotali, QUOTE, appelloScelto, lezioniProva, argomentiDi } from './pianifica.js';
 import { lezioniFinale, frequenza, espandi } from './pegaso.js';
 import { creaIcs } from './ics.js';
+import { schedeDi, lezioniBlocco, haStudio } from './studia.js';
 import { statoIniziale } from './store.js';
 import { addDays, diffDays, weekday } from './date.js';
 import { SEED } from './seed.js';
@@ -347,6 +348,20 @@ test('un esame alla volta: con poco lavoro rimasto si studia comunque ogni giorn
   for (let d = OGGI; d < '2026-12-01'; d = addDays(d, 1)) ok(lavoro.has(d), `giorno vuoto: ${d}`);
   ok(bl.some(b => b.titolo.includes('secondo giro')), 'secondo giro');
   ok(bl.filter(b => b.tipo !== 'finale').every(b => b.ore <= 2), 'ritmo leggero');
+});
+test('schede di ripasso: si importano dal file privato, si sommano e aprono il ripasso guidato', () => {
+  const s = seq(conCatalogo());
+  const ia = s.esami.find(e => e.codice === IA);
+  for (const e of s.esami) e.scelta = 'salta';
+  ia.scelta = ia.appelli[2].id;
+  const scheda = n => ({ p: [`concetto ${n}`], d: [['domanda', 'risposta']], q: [['quiz', ['giusta', 'b', 'c', 'd'], 0, 'perché']] });
+  importaPegaso(s, { schede: { [IA.toLowerCase()]: { 1: scheda(1), 2: scheda(2) } } }, OGGI);
+  importaPegaso(s, { schede: { [IA]: { 3: scheda(3) } } }, OGGI);
+  eq(Object.keys(schedeDi(s, ia)), ['1', '2', '3']);
+  eq(lezioniBlocco(ia, { argomentoId: 'R1-6+2' }), [1, 2, 3, 4, 5, 6]);
+  ok(haStudio(s, { tipo: 'quiz', argomentoId: 'Q1-17' }, ia));
+  ok(!haStudio(s, { tipo: 'video', argomentoId: 'L1' }, ia), 'non sulle videolezioni');
+  ok(!haStudio(s, { tipo: 'ripasso', argomentoId: 'R30-35' }, ia), 'lezioni senza schede');
 });
 test('un esame alla volta: esami lontani non si mescolano', () => {
   const s = seq(stato([{ nome: 'Primo', cfu: 6, data: '2027-01-20' }, { nome: 'Secondo', cfu: 6, data: '2027-04-20' }]));

@@ -8,6 +8,7 @@ import { REGOLE, lezioniFinale, frequenza } from './pegaso.js';
 import { ripianifica, segnaFatto, oreIndietro, oreTotali, oreFatte, argomentiDi, appelloScelto, capacita, oreNecessarie, lezioniProva, fasi, QSEQ, TIPI } from './pianifica.js';
 import { applicaProposta, avvisi, carriera, statoPrenotazione, appelloValido } from './esami.js';
 import { creaIcs } from './ics.js';
+import { pageStudia, clickStudia, haStudio, fermaStudio } from './studia.js';
 
 const $ = s => document.querySelector(s);
 const view = $('#view');
@@ -108,7 +109,8 @@ function taskHtml(b, readonly = false) {
   const key = b.storico != null ? `s${b.storico}` : `p${b.id}`;
   return `<${readonly ? 'div' : 'button'} class="task ${b.fatto ? 'done' : ''}" style="--c:${e.colore}" ${readonly ? '' : `data-task="${esc(key)}"`}>
     ${readonly ? '' : `<span class="check">${b.fatto ? '✓' : ''}</span>`}
-    <span class="t-body"><b>${emoji} ${label}${cosa ? `: ${esc(cosa)}` : ''}</b><small>${esc(e.nome)}</small></span><span class="h">${ore(b.ore)}</span></${readonly ? 'div' : 'button'}>`;
+    <span class="t-body"><b>${emoji} ${label}${cosa ? `: ${esc(cosa)}` : ''}</b><small>${esc(e.nome)}</small></span><span class="h">${ore(b.ore)}</span></${readonly ? 'div' : 'button'}>
+    ${!readonly && b.storico == null && haStudio(S, b, e) ? `<a class="apri" style="--c:${e.colore}" href="#/studia/${encodeURIComponent(b.id)}">${b.tipo === 'ripasso' ? '📖 Apri schede e domande' : b.tipo === 'simulazione' ? '⏱️ Inizia la simulazione' : '🧠 Inizia il quiz'}</a>` : ''}`;
 }
 
 // ---------------------------------------------------------------- Esami
@@ -365,7 +367,8 @@ function importaPersonale(testo) {
   const r = importaPegaso(S, dati, oggi);
   applicaProposta(S, oggi);
   if (sheet.open) sheet.close();
-  aggiorna(`Dati Pegaso caricati: ${r.esiti} esami superati e l'avanzamento di ${r.corsi} corsi.`);
+  const sc = Object.values(dati.schede ?? {}).reduce((a, x) => a + Object.keys(x).length, 0);
+  aggiorna(sc ? `Schede di ripasso caricate: ${sc} lezioni. Le trovi nei blocchi di ripasso e quiz.` : `Dati Pegaso caricati: ${r.esiti} esami superati e l'avanzamento di ${r.corsi} corsi.`);
 }
 function importPreview() {
   const { esami, errori } = anteprima;
@@ -378,6 +381,15 @@ function importPreview() {
 }
 
 // ---------------------------------------------------------------- navigazione
+/** Blocco del piano aperto nel ripasso guidato (#/studia/<id>), se c'è. */
+function bloccoStudio() {
+  const [page, id] = location.hash.replace(/^#\/?/, '').split('/');
+  if (page !== 'studia' || !id) return null;
+  let k = '';
+  try { k = decodeURIComponent(id); } catch { return null; }
+  const b = S.piano?.blocchi?.find(x => x.id === k);
+  return b && esame(b.esameId) ? b : null;
+}
 function render() {
   oggi = today();
   const h = location.hash.replace(/^#\/?/, '');
@@ -390,9 +402,12 @@ function render() {
     else render();
     return;
   }
-  const tab = page === 'esame' ? 'esami' : page || 'oggi';
+  const tab = page === 'esame' ? 'esami' : page === 'studia' ? 'oggi' : page || 'oggi';
   for (const a of document.querySelectorAll('#nav a')) a.classList.toggle('on', a.dataset.tab === tab);
-  if (page === 'esami') pageEsami();
+  fermaStudio();
+  const studio = bloccoStudio();
+  if (page === 'studia' && studio) pageStudia(view, S, esame(studio.esameId), studio);
+  else if (page === 'esami') pageEsami();
   else if (page === 'esame') pageEsame(id);
   else if (page === 'calendario') pageCalendario();
   else if (page === 'altro') pageAltro();
@@ -450,6 +465,14 @@ document.addEventListener('click', async e => {
   if (on('[data-close]')) { sheet.close(); return; }
   if (on('[data-update]')) { native.installUpdate(apkUpdate.url); toast('Download in corso: al termine si apre l\'installazione.'); return; }
   let el;
+  const studio = bloccoStudio();
+  if (studio && clickStudia(t, view, S, esame(studio.esameId), studio, () => {
+    if (!studio.fatto) segnaFatto(S, studio, true, oggi);
+    salva(S);
+    navigator.vibrate?.(30);
+    toast('Segnato come fatto 👍');
+    location.hash = '#/';
+  })) return;
   if ((el = on('[data-task]'))) {
     const k = el.dataset.task;
     if (k.startsWith('s')) {   // tolto dallo storico (era già fatto)

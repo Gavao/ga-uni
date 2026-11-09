@@ -2,7 +2,7 @@
 const SHELL = 'shell-v2';
 const FILES = [
   './', 'index.html', 'css/style.css', 'manifest.webmanifest',
-  'js/app.js', 'js/store.js', 'js/seed.js', 'js/date.js', 'js/importa.js', 'js/pianifica.js', 'js/esami.js', 'js/ics.js', 'js/pegaso.js', 'js/version.js',
+  'js/app.js', 'js/store.js', 'js/seed.js', 'js/date.js', 'js/importa.js', 'js/pianifica.js', 'js/esami.js', 'js/ics.js', 'js/pegaso.js', 'js/studia.js', 'js/version.js',
   'icons/icon-192.png', 'icons/icon-512.png',
 ];
 
